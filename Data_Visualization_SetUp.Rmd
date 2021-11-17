@@ -1,0 +1,169 @@
+---
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# All cancer
+## Time (year) colors
+
+```{r}
+years.colors <- c(
+  'green',
+  'purple4',
+  'blue',
+  'brown',
+  'tan1',
+  'darkgreen',
+  'black'
+  )
+names(years.colors) <- c(
+  '2009',
+  '2010',
+  '2011',
+  '2012',
+  '2013',
+  '2014',
+  '2015'
+  )
+```
+
+## Dataset colors
+
+```{r}
+### Data sets
+dataSets.colors <- wesanderson::wes_palette(
+  n = 4, 
+  name = "GrandBudapest1")[c(1,2,4,3)]
+names(dataSets.colors) <- c(
+  'Raw counts',
+  'FPKM',
+  'FPKM.UQ',
+  'RUV-III'
+  )
+```
+
+
+# TCGA READ and COAD
+## Major times
+
+```{r}
+major.times.colors <- c('turquoise4', 'yellow4')
+names(major.times.colors) <- c('2010', '2011:2014')
+```
+
+## CMS colors
+
+```{r}
+cms.colors <- c(
+  'orange',
+  'royalblue2',
+  'plum2',
+  'seagreen3',
+  'gray70'
+  ) 
+names(cms.colors) <- c(
+  'CMS1', 
+  'CMS2', 
+  'CMS3', 
+  'CMS4',
+  'Not classified'
+  )
+```
+
+
+
+```{r}
+
+### Library size and purity
+LsPurity.colors <- c(
+  'darkorange4',
+  'gold4'
+  )
+names(LsPurity.colors) <- c(
+  'LibrarySize', 
+  'Purity'
+  )
+
+```
+
+# MSI colors
+
+```{r}
+### MSI color
+msi.colors <- c(
+  'purple3', 
+  'hotpink2', 
+  'yellow2', 
+  'gray70', 
+  'red'
+  )
+names(msi.colors) <- c(
+  "MSS" ,
+  "MSI-L",
+  "MSI-H",
+  "Indeterminate",
+  "Adjacent normal"
+  )
+
+### Main times colors
+# timePoints.colors <- wesanderson::wes_palette("Rushmore1", n = 5)[c(3:4)]
+# names(timePoints.colors) <- c('2010', '2011:2014')
+
+### CMS colors
+# cms.colors <- c(
+#   'orange',
+#   'royalblue2',
+#   'plum2',
+#   'seagreen3',
+#   'red',
+#   'gray70'
+#   ) 
+# names(cms.colors) <- levels(read.sampleAnnot$cms.cancer.fpkm)
+```
+
+# Purity color
+```{r}
+purity.colors = viridis::plasma(n = 10)
+```
+
+
+# TCGA Breast
+### 
+```{r}
+library("viridis")
+FcCh.colors <- c('#440154FF', 'yellow 3')
+names(FcCh.colors) <- c(
+  '2010:2011', 
+  '2012:2014'
+  )
+### PAM50 colors
+pam50.colors <- c(
+  'gray',
+  'red',
+  'darkgreen',
+  'navy',
+  'cyan3', 
+  'darkorange'
+  ) 
+names(pam50.colors) <- c(
+  "Adjacent normal", 
+  "Basal",
+  "Her2",
+  "LumA",
+  "LumB", 
+  "Normal like"
+  )
+```
+
+```{r}
+sub.batches.color <- c(
+  'darkgreen', 
+  'navy', 
+  'tomato', 
+  'plum',
+  'black'
+  )
+names(sub.batches.color) <- c('group1', 'group2', 'group3', 'group4', 'group5')
+```
+
+
