@@ -9,7 +9,7 @@ Available folders contain the below files:
 Please email molania.r@wehi.edu.au if you have any questions.
 
 
-*Unwanted variation in individual TCGA RNA-seq datasets.*
+*Unwanted variation in TCGA RNA-seq datasets.*
 
 <img src="./TCGA_Main1.png">
 
