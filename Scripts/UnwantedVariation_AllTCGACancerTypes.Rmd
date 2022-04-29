@@ -1,0 +1,1648 @@
+---
+title: "EDA_UwantedVariation_ROLCRS"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "20-07-2019"
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 5
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r knitr_init, echo=FALSE, results="asis"}
+library(knitr)
+library(rmdformats)
+library(DT)
+library(BiocStyle)
+options(max.print = "75")
+opts_chunk$set(
+  echo = FALSE,
+  prompt = FALSE,
+  comment = FALSE,
+  message = FALSE,
+  warning = FALSE)
+opts_knit$set(width = 65)
+```
+
+
+# Set-up paths
+```{r}
+stat.summaries.path <- "../Data/TCGA_AllCancer_StatisticalSummaries/"
+eda.uw.all.cancer.figPath <- '../figure/TCGA_EDA_UwantedVariation_AllCancer/'
+pan.cancer.path <- "../Data/TCGA_PanCancer_DataSets/"
+files <- list.files(stat.summaries.path)
+```
+
+# Library size distribution
+
+```{r}
+librarySize.all.cancers <- lapply(
+  1:33,
+  function(x){
+    all.test <- readRDS(paste0(
+      stat.summaries.path,
+      files[x])
+      )
+    cancer <- gsub('.rds', '', strsplit(files[x], '_')[[1]][6])
+    df <- data.frame(
+      librarySize = all.test$librarySize,
+      time.years = all.test$time.years,
+      cancer = rep(cancer, all.test$n.samples)
+    )
+  })
+librarySize.all.cancers <- do.call(
+  rbind,
+  librarySize.all.cancers
+  )
+dim(librarySize.all.cancers) # 10296     3
+
+### Counting samples for each cancer type
+librarySize.all.cancers <- librarySize.all.cancers %>%
+  dplyr::group_by(cancer) %>%
+  dplyr::tally() %>%
+  dplyr::right_join(librarySize.all.cancers) %>%
+  dplyr::mutate(n.cancer = paste0(cancer, ' (', n, ')')) %>%
+  data.frame()
+
+librarySize.all.cancers$n.cancer <- as.factor(
+  librarySize.all.cancers$n.cancer
+  )
+librarySize.all.cancers$n.cancer <- factor(
+  librarySize.all.cancers$n.cancer,
+  rev(levels(librarySize.all.cancers$n.cancer))
+  )
+### Save data
+saveRDS(
+  object = librarySize.all.cancers,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_LibrarySizeDistributionPlot.rds')
+  )
+
+librarySize.all.cancers <- readRDS(file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_LibrarySizeDistributionPlot.rds')
+    )
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_DensityPlot_Distribution_LibrarySize.tiff'),
+  width = 1400,
+  height = 3400,
+  res = 400
+  )
+ggplot(librarySize.all.cancers, aes(x = log2(librarySize), y = n.cancer, fill = time.years)) +
+  geom_density_ridges(scale = 2, rel_min_height = .01, alpha = .7) +
+  scale_y_discrete(expand = c(0.01, 0)) +
+  scale_fill_manual(values = years.colors,  guide = guide_legend(
+    direction = "horizontal",
+    title.position = "top",
+    label.position = "bottom",
+    label.hjust = 0.5,
+    label.vjust = 1,
+    nrow = 1,
+    byrow = TRUE, 
+    label.theme = element_text(angle = 30, size = 8)
+  )) +
+  geom_vline(
+    xintercept = c(23,24,25,26,27),
+    linetype = "dotted", 
+    color = "gray40", 
+    size = .3) +
+  xlab(expression(Log[2]~'library size')) + xlim(23, 27) +
+  theme_joy() +
+  # facet_wrap(~ cancer, scales = 'free') +
+  labs(fill = 'Time\n(years)') +
+  theme(
+    panel.background = element_blank(),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_blank(),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 8),
+    legend.title = element_text(size = 10),
+    strip.text.x = element_text(size = 13),
+    legend.position = 'bottom') 
+dev.off()
+```
+
+# Linear regression between PCs and library size
+
+```{r}
+data.sets <- c(
+  'HTseq_counts',
+  'HTseq_FPKM',
+  'HTseq_FPKM.UQ'
+  )
+lm.pca.librarySize <- lapply(
+    1:33,
+    function(x){
+    all.test <- readRDS(
+      paste0(
+        stat.summaries.path,
+        files[x])
+      )
+    do.call(rbind, all.test$linear.reg.pca.librarySize)
+  })
+lm.pca.librarySize <- do.call(
+  rbind,
+  lm.pca.librarySize) %>%
+  data.frame(.)
+
+lm.pca.librarySize <- tidyr::pivot_wider(
+  lm.pca.librarySize,
+  names_from = pcs,
+  values_from = c(lm.square, pcs.var)) %>%
+  as.data.frame(.)
+
+colnames(lm.pca.librarySize)[3:7] <- c('PC1', paste0('PC1:', c(2:5)))
+lm.pca.librarySize$data[lm.pca.librarySize$data == 'HTseq_counts'] <- 'Raw counts'
+lm.pca.librarySize$data[lm.pca.librarySize$data == 'HTseq_FPKM'] <- 'FPKM'
+lm.pca.librarySize$data[lm.pca.librarySize$data == 'HTseq_FPKM.UQ'] <- 'FPKM.UQ'
+
+### Saving the data
+saveRDS(
+  object = lm.pca.librarySize,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_LinearRegression_PCs_LibrarySize_HeatMapPlot.rds')
+  )
+
+lm.pca.librarySize <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_LinearRegression_PCs_LibrarySize_HeatMapPlot.rds')
+  )
+
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_LinearRegression_PCs_LibrarySize1.tiff'),
+  width = 1000,
+  height = 3400,
+  res = 400
+  )
+colfunc <- colorRampPalette(rev(RColorBrewer::brewer.pal(9, 'PuRd')))
+h.ls <- ComplexHeatmap::Heatmap(
+  lm.pca.librarySize[, 3:7],
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_column_names = TRUE,
+  column_split = c(colnames(lm.pca.librarySize[, 3:7])),
+  rect_gp = grid::gpar(col = "white", lwd = 1.5),
+  column_title = NULL,
+  row_split = lm.pca.librarySize$cancer,
+  row_title_rot = 0,
+  row_title_gp = grid::gpar(fontsize = 10),
+  col = rev(colfunc(6)),
+  row_names_gp = grid::gpar(fontsize = 6, fontface = "bold"),
+  border = TRUE,
+  row_gap = unit(1, "mm"),
+  column_gap = unit(.2, "mm"),
+  show_heatmap_legend = TRUE
+  # heatmap_legend_param = list(
+  #   at = seq(0, 1, .2),
+  #   title = expression("R" ^ "2"),
+  #   ncol = 1,
+  #   type = "grid",
+  #   grid_height = unit(4, "mm"),
+  #   direction = "horizontal",
+  #   labels_gp = grid::gpar(fontsize = 10),
+  #   legend_width = unit(4, "cm"),
+  #   title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  # )
+)
+h.ls
+dev.off()
+
+```
+
+# Linear regression between PCs and Purity
+
+```{r}
+data.sets <- c(
+  'HTseq_counts',
+  'HTseq_FPKM',
+  'HTseq_FPKM.UQ'
+  )
+lm.pca.purity <- lapply(
+    1:33,
+    function(x){
+    all.test <- readRDS(
+      paste0(
+        stat.summaries.path,
+        files[x])
+      )
+    do.call(rbind, all.test$linear.reg.pca.purity)
+  })
+lm.pca.purity <- do.call(
+  rbind,
+  lm.pca.purity) %>%
+  data.frame(.)
+
+lm.pca.purity <- tidyr::pivot_wider(
+  lm.pca.purity,
+  names_from = pcs,
+  values_from = c(lm.square, pcs.var)) %>%
+  as.data.frame(.)
+
+colnames(lm.pca.purity)[3:7] <- c('PC1', paste0('PC1:', c(2:5)))
+lm.pca.purity$data[lm.pca.purity$data == 'HTseq_counts'] <- 'Raw counts'
+lm.pca.purity$data[lm.pca.purity$data == 'HTseq_FPKM'] <- 'FPKM'
+lm.pca.purity$data[lm.pca.purity$data == 'HTseq_FPKM.UQ'] <- 'FPKM.UQ'
+
+### Saving the data
+lm.pca.purity <- saveRDS(
+  object = lm.pca.purity,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_LinearRegression_PCs_Purity_HeatMapPlot.rds')
+  )
+
+lm.pca.purity <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_LinearRegression_PCs_Purity_HeatMapPlot.rds')
+)
+
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_LinearRegression_PCs_Purity.tiff'),
+  width = 1000,
+  height = 3400,
+  res = 400
+  )
+colfunc <- colorRampPalette(rev(RColorBrewer::brewer.pal(9, 'PuRd')))
+h.purity <- ComplexHeatmap::Heatmap(
+  lm.pca.purity[, 3:7],
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_column_names = FALSE,
+  column_split = c(colnames(lm.pca.librarySize[, 3:7])),
+  rect_gp = grid::gpar(col = "white", lwd = 1.5),
+  column_title = NULL,
+  row_split = lm.pca.librarySize$cancer,
+  row_title_rot = 0,
+  row_title_gp = grid::gpar(fontsize = 10),
+  col = rev(colfunc(6)),
+  row_names_gp = grid::gpar(fontsize = 6, fontface = "bold"),
+  border = TRUE,
+  row_gap = unit(1, "mm"),
+  column_gap = unit(.2, "mm"),
+  show_heatmap_legend = FALSE
+  # heatmap_legend_param = list(
+  #   at = seq(0, 1, .2),
+  #   title = expression("R" ^ "2"),
+  #   ncol = 1,
+  #   type = "grid",
+  #   grid_height = unit(4, "mm"),
+  #   direction = "horizontal",
+  #   labels_gp = grid::gpar(fontsize = 10),
+  #   legend_width = unit(4, "cm"),
+  #   title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  # )
+)
+h.purity
+dev.off()
+```
+
+# Linear regression between PCs and medians of RLE
+
+```{r}
+data.sets <- c('HTseq_counts',
+               'HTseq_FPKM',
+               'HTseq_FPKM.UQ')
+lm.pca.medianRle <- lapply(
+    1:33,
+    function(x){
+    all.test <- readRDS(
+      paste0(
+        stat.summaries.path,
+        files[x])
+      )
+    do.call(rbind, all.test$linear.reg.pca.rleMedian)
+  })
+lm.pca.medianRle <- do.call(
+  rbind,
+  lm.pca.medianRle) %>%
+  data.frame(.)
+
+lm.pca.medianRle <- tidyr::pivot_wider(
+  lm.pca.medianRle,
+  names_from = pcs,
+  values_from = c(lm.square, pcs.var)) %>%
+  as.data.frame(.)
+
+colnames(lm.pca.medianRle)[3:7] <- c('PC1', paste0('PC1:', c(2:5)))
+lm.pca.medianRle$data[lm.pca.medianRle$data == 'HTseq_counts'] <- 'Raw counts'
+lm.pca.medianRle$data[lm.pca.medianRle$data == 'HTseq_FPKM'] <- 'FPKM'
+lm.pca.medianRle$data[lm.pca.medianRle$data == 'HTseq_FPKM.UQ'] <- 'FPKM.UQ'
+
+### Saving the data
+lm.pca.medianRle <- saveRDS(
+  object = lm.pca.medianRle,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_LinearRegression_PCs_MedianRle_HeatMapPlot.rds')
+  )
+
+lm.pca.medianRle <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_LinearRegression_PCs_MedianRle_HeatMapPlot.rds')
+)
+
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_LinearRegression_PCs_MedianRle.tiff'),
+  width = 1000,
+  height = 3400,
+  res = 400
+  )
+colfunc <- colorRampPalette(rev(RColorBrewer::brewer.pal(9, 'PuRd')))
+h.rle <- ComplexHeatmap::Heatmap(
+  lm.pca.medianRle[, 3:7],
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  show_column_names = FALSE,
+  column_split = c(colnames(lm.pca.librarySize[, 3:7])),
+  rect_gp = grid::gpar(col = "white", lwd = 1.5),
+  column_title = NULL,
+  row_split = lm.pca.librarySize$cancer,
+  row_title_rot = 0,
+  row_title_gp = grid::gpar(fontsize = 10),
+  col = rev(colfunc(6)),
+  row_names_gp = grid::gpar(fontsize = 6, fontface = "bold"),
+  border = TRUE,
+  row_gap = unit(1, "mm"),
+  column_gap = unit(.2, "mm"),
+  show_heatmap_legend = FALSE
+  # heatmap_legend_param = list(
+  #   at = seq(0, 1, .2),
+  #   title = expression("R" ^ "2"),
+  #   ncol = 1,
+  #   type = "grid",
+  #   grid_height = unit(4, "mm"),
+  #   direction = "horizontal",
+  #   labels_gp = grid::gpar(fontsize = 10),
+  #   legend_width = unit(4, "cm"),
+  #   title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  # )
+)
+h.rle
+dev.off()
+```
+
+# ANOVA between gene expression and plates
+
+```{r}
+data.sets <- c(
+  'HTseq_counts',
+  'HTseq_FPKM',
+  'HTseq_FPKM.UQ'
+  )
+anova.genes.plates <- lapply(
+  c(1:33),
+  function(x){
+    all.test <- readRDS(paste0(stat.summaries.path, files[x]))
+    if(all.test$anova.genes.plates != 'There is only a plate'){
+      df <- data.frame(
+        Raw.counts = all.test$anova.genes.plates$HTseq_counts$FValue,
+        FPKM = all.test$anova.genes.plates$HTseq_FPKM$FValu,
+        FPKM.UQ = all.test$anova.genes.plates$HTseq_FPKM.UQ$FValu,
+        cancer = rep(
+          gsub('.rds', '', strsplit(files[x], '_')[[1]][6]),
+          length(all.test$genes)
+        )
+      )
+      df
+      }else{
+        df <- data.frame(
+          Raw.counts = 0,
+          FPKM = 0,
+          FPKM.UQ = 0,
+          cancer = gsub('.rds', '', strsplit(files[x], '_')[[1]][6])
+        )
+        df
+        }
+    })
+anova.genes.plates <- do.call(rbind, anova.genes.plates)
+anova.genes.plates <- anova.genes.plates %>%
+  tidyr::pivot_longer(
+    -cancer,
+    values_to = 'fvalue',
+    names_to = 'dataSets') %>%
+  data.frame()
+anova.genes.plates$dataSets[anova.genes.plates$dataSets == 'Raw.counts'] <- 'Raw counts'
+
+anova.genes.plates$dataSets <- factor(
+  anova.genes.plates$dataSets,
+  levels = unique(anova.genes.plates$dataSets)
+  )
+anova.genes.plates$cancer <- factor(
+  anova.genes.plates$cancer,
+  levels = rev(unique(anova.genes.plates$cancer))
+  )
+
+### Saving the data
+saveRDS(
+  object = anova.genes.plates,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Anova_Genes_Plates_DensityPlot.rds')
+  )
+
+anova.genes.plates <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Anova_Genes_Plates_DensityPlot.rds')
+  )
+
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_DensityPlot_Anova_genes_plates.tiff'),
+  width = 1000,
+  height = 3400,
+  res = 400
+  )
+
+p.anova <- ggplot(anova.genes.plates, aes(x = fvalue, y = cancer, fill = dataSets)) +
+  geom_joy(scale = 2,
+           rel_min_height = .01,
+           alpha = .6) +
+  # scale_y_discrete(expand = c(0.01, 0)) +
+  scale_fill_manual(values = dataSets.colors) +
+  xlim(c(-.1, 7)) +
+  # geom_vline(
+  #   xintercept = seq(-1,1,.25),
+  #   linetype = 'dotted',
+  #   color = 'black',
+  #   size = .2) +
+  xlab("Spearman's correlation coefficient") +
+  theme_joy() +
+  # facet_wrap(~ cancer, scales = 'free') +
+  labs(fill = 'Data sets') +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(size = 10),
+    panel.background = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 6),
+    legend.position = 'none'
+  ) +
+  guides(fill = guide_legend(nrow = 1))
+
+p.anova
+dev.off()
+```
+
+# Correlation between genes and library size
+
+```{r}
+corr.genes.librarySize <- lapply(
+  c(1:33),
+  function(x) {
+    all.test <- readRDS(paste0(
+      stat.summaries.path,
+      files[x])
+      )
+    corr.coeff <- as.data.frame(
+      do.call(cbind, all.test$corr.genes.librarySize)
+      )
+    corr.coeff$cancer <- rep(
+      strsplit(files[x], '_')[[1]][6],
+      length(all.test$genes)
+      )
+    return(corr.coeff)
+  })
+corr.genes.librarySize <- do.call(
+  rbind,
+  corr.genes.librarySize
+  )
+colnames(corr.genes.librarySize)[1:3] <- c(
+  'HTseq_counts',
+  'HTseq_FPKM',
+  'HTseq_FPKM.UQ'
+  )
+corr.genes.librarySize <- corr.genes.librarySize %>%
+  tidyr::pivot_longer(
+    -cancer,
+    names_to = 'dataSets',
+    values_to = 'cor.coeff') %>%
+  data.frame()
+corr.genes.librarySize$cancer <- factor(
+  corr.genes.librarySize$cancer,
+  levels = rev(unique(corr.genes.librarySize$cancer))
+  )
+corr.genes.librarySize$dataSets[corr.genes.librarySize$dataSets == 'HTseq_counts'] <-'Raw counts'
+corr.genes.librarySize$dataSets[corr.genes.librarySize$dataSets == 'HTseq_FPKM'] <- 'FPKM'
+corr.genes.librarySize$dataSets[corr.genes.librarySize$dataSets == 'HTseq_FPKM.UQ'] <- 'FPKM.UQ'
+corr.genes.librarySize$dataSets <- factor(
+  corr.genes.librarySize$dataSets,
+  levels = c('Raw counts', 'FPKM', 'FPKM.UQ')
+  )
+
+### Saving the data
+saveRDS(
+  object = corr.genes.librarySize,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Correlation_Genes_LibrarySize_DensityPlot.rds')
+  )
+
+corr.genes.librarySize <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Correlation_Genes_LibrarySize_DensityPlot.rds')
+  )
+corr.genes.librarySize$cancer <- gsub(
+  '.rds', 
+  '', 
+  corr.genes.librarySize$cancer
+  )
+
+corr.genes.librarySize$cancer <- factor(
+  x = corr.genes.librarySize$cancer,
+  levels =  rev(unique(corr.genes.librarySize$cancer))
+  )
+
+
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_DensityPlot_Correlation_genes_librarySize.tiff'),
+  width = 1000,
+  height = 3400,
+  res = 400
+  )
+p.ls <- ggplot(corr.genes.librarySize, aes(x = cor.coeff, y = cancer, fill = dataSets)) +
+  geom_joy(scale = 2,
+           rel_min_height = .01,
+           alpha = .4) +
+  scale_y_discrete(expand = c(0.01, 0)) +
+  scale_fill_manual(values = dataSets.colors) +
+  xlim(c(-.75, 1)) +
+  geom_vline(
+    xintercept = seq(-1, .75, .25),
+    linetype = 'dotted',
+    color = 'black',
+    size = .2
+  ) +
+  geom_vline(xintercept = 0,
+             size = 1,
+             linetype = 'dotted') +
+  xlab("Spearman's correlation coefficient") +
+  theme_joy() +
+  # facet_wrap(~ cancer, scales = 'free') +
+  labs(fill = 'Data sets') +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(size = 10),
+    panel.background = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 6),
+    legend.position = 'none'
+  ) +
+  guides(fill = guide_legend(nrow = 1))
+p.ls
+dev.off()
+```
+
+# Correlation between genes and library size - average expression
+
+```{r}
+corr.genes.librarySize <- lapply(
+  c(1:33),
+  function(x){
+   htseq.data <- readRDS(paste0(
+    sum.expr.path,
+    all.files$sum.expr[x]))
+  ### remove lowly expressed genes and non protein coding gene
+  gene.annot <- as.data.frame(SummarizedExperiment::rowData(htseq.data))
+  keep.genes <- gene.annot$keep.cancer == 'yes' & gene.annot$protein.coding == 'yes'
+  gene.annot <- gene.annot[keep.genes, ]
+  htseq.data <- htseq.data[keep.genes, ]
+   ### Keep plates with more 2 samples-removing outliers
+  keep.samples <- htseq.data$plates.status.cancer == 'yes' &
+    htseq.data$outlier.ls.cancer == 'no' &
+      htseq.data$tissue == 'cancer'
+  htseq.data <- htseq.data[ , keep.samples]
+
+  row.names(htseq.data) <- gene.annot$hgnc_symbol_BioMart
+
+  ### Library size
+  htseq.data$ls <- colSums(as.matrix(assay(htseq.data, 'HTseq_counts')))
+  raw.data <- as.matrix(SummarizedExperiment::assay(htseq.data, 'HTseq_counts'))
+  cor.gene.ls <-
+    .corr.gene.variable(
+      expr.data = raw.data,
+      is.log = FALSE,
+      variable =  htseq.data$ls,
+      method = 'spearman',
+      n.cores = 8,
+      group = 'ls'
+    )
+  cor.gene.ls$ave.expr <- rowMeans(raw.data)
+  cor.gene.ls$cancer <- gsub('.rds', '', strsplit(all.files$sum.expr[x], '_')[[1]][4])
+  cor.gene.ls
+  
+  })
+corr.genes.librarySize <- do.call(
+  rbind,
+  corr.genes.librarySize
+  )
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_ScatterPlots_Correlation_genes_librarySize_AverageExpr.tiff'),
+  width = 3000,
+  height = 3000,
+  res = 400
+  )
+p.ls <- ggplot(corr.genes.librarySize, aes(x = ls_rho, y = log2(ave.expr +1))) +
+  geom_point(size = .5, alpha = .3, color = 'grey30') +
+  geom_density2d() +
+  geom_smooth(color = 'red') +
+  facet_wrap(~cancer) +
+  geom_vline(xintercept = 0, linetype = 'dotted') +
+  xlab("Spearman correlation") +
+  ylab(expression(Log[2] ~ "average gene expression")) +
+  # facet_wrap(~ cancer, scales = 'free') +
+  theme_bw() +
+  theme(
+    axis.title.y = element_text(size = 14),
+    axis.title.x = element_text(size = 14),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 12),
+    legend.position = 'none'
+  ) +
+  guides(fill = guide_legend(nrow = 1))
+p.ls
+dev.off()
+```
+
+# Correlation between genes and purity
+
+```{r}
+corr.genes.purity <- lapply(
+  c(1:33),
+  function(x) {
+    all.test <- readRDS(paste0(
+      stat.summaries.path,
+      files[x])
+      )
+    corr.coeff <- as.data.frame(
+      do.call(cbind, all.test$corr.genes.purity)
+      )
+    corr.coeff$cancer <- rep(
+      strsplit(files[x], '_')[[1]][6],
+      length(all.test$genes)
+      )
+    return(corr.coeff)
+  })
+corr.genes.purity <- do.call(
+  rbind,
+  corr.genes.purity
+  )
+colnames(corr.genes.purity)[1:3] <- c(
+  'HTseq_counts',
+  'HTseq_FPKM',
+  'HTseq_FPKM.UQ'
+  )
+corr.genes.purity <- corr.genes.purity %>%
+  tidyr::pivot_longer(
+    -cancer,
+    names_to = 'dataSets',
+    values_to = 'cor.coeff') %>%
+  data.frame()
+corr.genes.purity$cancer <- factor(
+  corr.genes.librarySize$cancer,
+  levels = rev(unique(corr.genes.purity$cancer))
+  )
+corr.genes.purity$dataSets[corr.genes.purity$dataSets == 'HTseq_counts'] <-'Raw counts'
+corr.genes.purity$dataSets[corr.genes.purity$dataSets == 'HTseq_FPKM'] <- 'FPKM'
+corr.genes.purity$dataSets[corr.genes.purity$dataSets == 'HTseq_FPKM.UQ'] <- 'FPKM.UQ'
+corr.genes.purity$dataSets <- factor(
+  corr.genes.purity$dataSets,
+  levels = c('Raw counts', 'FPKM', 'FPKM.UQ')
+  )
+
+### Saving the data
+saveRDS(
+  object = corr.genes.purity,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Correlation_Genes_Purity_DensityPlot.rds')
+  )
+
+corr.genes.purity <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Correlation_Genes_Purity_DensityPlot.rds')
+  )
+
+
+corr.genes.purity$cancer <- gsub(
+  '.rds', 
+  '', 
+  corr.genes.purity$cancer
+  )
+
+corr.genes.purity$cancer <- factor(
+  x = corr.genes.purity$cancer,
+  levels =  rev(unique(corr.genes.purity$cancer))
+  )
+
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_DensityPlot_Correlation_genes_purity.tiff'),
+  width = 1000,
+  height = 3400,
+  res = 400
+  )
+p.purity <- ggplot(corr.genes.purity, aes(x = cor.coeff, y = cancer, fill = dataSets)) +
+  geom_joy(scale = 2,
+           rel_min_height = .01,
+           alpha = .4) +
+  scale_y_discrete(expand = c(0.01, 0)) +
+  scale_fill_manual(values = dataSets.colors) +
+  xlim(c(-1, .75)) +
+  geom_vline(
+    xintercept = seq(-1, 1, .25),
+    linetype = 'dotted',
+    color = 'black',
+    size = .2
+  ) +
+  geom_vline(xintercept = 0,
+             size = 1,
+             linetype = 'dotted') +
+  xlab("Spearman's correlation coefficient") +
+  theme_joy() +
+  # facet_wrap(~ cancer, scales = 'free') +
+  labs(fill = 'Data sets') +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(size = 10),
+    panel.background = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 6),
+    legend.position = 'none'
+  ) +
+  guides(fill = guide_legend(nrow = 1))
+p.purity
+dev.off()
+```
+
+# Correlation between genes and median of RLE
+
+```{r}
+corr.genes.medianRLE <- lapply(
+  c(1:33),
+  function(x) {
+    all.test <- readRDS(paste0(
+      stat.summaries.path,
+      files[x])
+      )
+    corr.coeff <- as.data.frame(
+      do.call(cbind, all.test$corr.genes.medianRle)
+      )
+    corr.coeff$cancer <- rep(
+      strsplit(files[x], '_')[[1]][6],
+      length(all.test$genes)
+      )
+    return(corr.coeff)
+  })
+corr.genes.medianRLE <- do.call(
+  rbind,
+  corr.genes.medianRLE
+  )
+colnames(corr.genes.medianRLE)[1:3] <- c(
+  'HTseq_counts',
+  'HTseq_FPKM',
+  'HTseq_FPKM.UQ'
+  )
+corr.genes.medianRLE <- corr.genes.medianRLE %>%
+  tidyr::pivot_longer(
+    -cancer,
+    names_to = 'dataSets',
+    values_to = 'cor.coeff') %>%
+  data.frame()
+corr.genes.medianRLE$cancer <- factor(
+  corr.genes.librarySize$cancer,
+  levels = rev(unique(corr.genes.medianRLE$cancer))
+  )
+corr.genes.medianRLE$dataSets[corr.genes.medianRLE$dataSets == 'HTseq_counts'] <-'Raw counts'
+corr.genes.medianRLE$dataSets[corr.genes.medianRLE$dataSets == 'HTseq_FPKM'] <- 'FPKM'
+corr.genes.medianRLE$dataSets[corr.genes.medianRLE$dataSets == 'HTseq_FPKM.UQ'] <- 'FPKM.UQ'
+corr.genes.medianRLE$dataSets <- factor(
+  corr.genes.medianRLE$dataSets,
+  levels = c('Raw counts', 'FPKM', 'FPKM.UQ')
+  )
+
+### Saving the data
+saveRDS(
+  object = corr.genes.medianRLE,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Correlation_Genes_MedRle_DensityPlot.rds')
+  )
+
+corr.genes.medianRLE <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Correlation_Genes_MedRle_DensityPlot.rds')
+  )
+
+corr.genes.medianRLE$cancer <- gsub(
+  '.rds', 
+  '', 
+  corr.genes.medianRLE$cancer
+  )
+
+corr.genes.medianRLE$cancer <- factor(
+  x = corr.genes.medianRLE$cancer,
+  levels =  rev(unique(corr.genes.medianRLE$cancer))
+  )
+
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_DensityPlot_Correlation_genes_medianOfRle.tiff'),
+  width = 1000,
+  height = 3400,
+  res = 400
+  )
+p.corr.medRle <- ggplot(corr.genes.medianRLE, aes(x = cor.coeff, y = cancer, fill = dataSets)) +
+  geom_joy(scale = 2,
+           rel_min_height = .01,
+           alpha = .4) +
+  scale_y_discrete(expand = c(0.01, 0)) +
+  scale_fill_manual(values = dataSets.colors) +
+  xlim(c(-1, 1)) +
+  geom_vline(
+    xintercept = seq(-1, 1, .25),
+    linetype = 'dotted',
+    color = 'black',
+    size = .2
+  ) +
+  geom_vline(xintercept = 0,
+             size = 1,
+             linetype = 'dotted') +
+  xlab("Spearman's correlation coefficient") +
+  theme_joy() +
+  # facet_wrap(~ cancer, scales = 'free') +
+  labs(fill = 'Data sets') +
+  theme(
+    axis.title.y = element_blank(),
+    axis.title.x = element_text(size = 10),
+    panel.background = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 6),
+    legend.position = 'none'
+  ) +
+  guides(fill = guide_legend(nrow = 1))
+p.corr.medRle
+dev.off()
+```
+
+# Canonical correlation between PCs and plates
+
+```{r}
+cca.pcs.plates <- lapply(
+  1:33,
+  function(x) {
+    all.test <- readRDS(paste0(
+      stat.summaries.path,
+      files[x]
+    ))
+    if (all.test$anova.genes.plates != 'There is only a plate') {
+      all.cca.coeff <- lapply(
+        data.sets,
+        function(y) {
+          nPCs <- 5
+          pcs <- all.test$pca[[y]]$sing.val$u[, 1:nPCs]
+          pcs.var <- all.test$pca[[y]]$variation[1:nPCs]
+          bacth.dummies <- fastDummies::dummy_cols(all.test$plate.ids)
+          bacth.dummies <- bacth.dummies[, c(2:ncol(bacth.dummies))]
+          cca.coeff <-
+            sapply(
+              1:nPCs,
+              function(z) {
+                cca.time <- stats::cancor(
+                  x = pcs[, 1:z, drop = FALSE],
+                  y = bacth.dummies)
+                     cca.coeff <- 1 - prod(1 - cca.time$cor ^ 2)
+                   })
+          df <- data.frame(
+            cc = cca.coeff,
+            pcs.var = pcs.var,
+            pcs = paste0('PC', c(1:nPCs)),
+            cancer = rep(gsub('.rds', '', strsplit(files[x], '_')[[1]][6]), nPCs),
+            data = rep(y, nPCs)
+          )
+          return(df)
+        })
+      do.call(rbind, all.cca.coeff)
+    }
+})
+cca.pcs.plates <- do.call(
+  rbind,
+  cca.pcs.plates
+  )
+cca.pcs.plates <- as.data.frame(cca.pcs.plates)
+cca.pcs.plates <- tidyr::pivot_wider(
+  cca.pcs.plates,
+  names_from = pcs,
+  values_from = c(cc, pcs.var)) %>%
+  data.frame(.)
+excluded.cancer <- !all.files$cancer %in% cca.pcs.plates$cancer
+excluded.cancer <- all.files$cancer[excluded.cancer]
+excluded.cancer <- data.frame(
+  cancer =  rep(excluded.cancer, each = 3),
+  data = rep(data.sets, length(excluded.cancer))
+  )
+cca.pcs.plates <- dplyr::bind_rows(
+  cca.pcs.plates,
+  excluded.cancer
+  )
+colnames(cca.pcs.plates)[c(3:7)] <- c('PC1', paste0('PC1:', 2:5))
+cca.pcs.plates$data[cca.pcs.plates$data == 'HTseq_counts'] <- 'Raw counts'
+cca.pcs.plates$data[cca.pcs.plates$data == 'HTseq_FPKM'] <- 'FPKM'
+cca.pcs.plates$data[cca.pcs.plates$data == 'HTseq_FPKM.UQ'] <- 'FPKM.UQ'
+
+### Saving the data
+saveRDS(
+  object = cca.pcs.plates,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Cca_Pcs_Plates_HeatMapPlot.rds')
+  )
+cca.pcs.plates <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Cca_Pcs_Plates_HeatMapPlot.rds')
+  )
+
+### Plot
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_CCA_Pcs_Plates.tiff'),
+  width = 1000,
+  height = 3400,
+  res = 400
+  )
+colfunc <- grDevices::colorRampPalette(rev(RColorBrewer::brewer.pal(9, 'PuRd')))
+h.cca.plate <- ComplexHeatmap::Heatmap(
+  cca.pcs.plates[, 3:7],
+  cluster_rows = FALSE,
+  row_labels = NULL,
+  show_column_names = TRUE,
+  cluster_columns = FALSE,
+  column_split = c(colnames(cca.pcs.plates[, 3:7])),
+  column_names_rot = 45,
+  column_names_gp = grid::gpar(fontsize = 12),
+  rect_gp = grid::gpar(col = "white", lwd = 1.5),
+  column_title = NULL,
+  column_names_side = "top",
+  row_split = cca.pcs.plates$cancer,
+  row_title_rot = 0,
+  show_row_names = FALSE,
+  row_title_gp = grid::gpar(fontsize = 10),
+  col = rev(colfunc(6)),
+  row_names_gp = grid::gpar(fontsize = 6, fontface = "bold"),
+  border = TRUE,
+  row_gap = unit(1, "mm"),
+  column_gap = unit(.2, "mm"),
+  show_heatmap_legend = FALSE
+  # heatmap_legend_param = list(
+  #   at = seq(0, 1, .2),
+  #   title = "Vector correlation",
+  #   ncol = 1,
+  #   type = "grid",
+  #   grid_height = unit(4, "mm"),
+  #   direction = "horizontal",
+  #   labels_gp = grid::gpar(fontsize = 10),
+  #   legend_width = unit(4, "cm"),
+  #   title_gp = grid::gpar(fontsize = 10, fontface = "bold")
+  # )
+)
+h.cca.plate
+dev.off()
+
+```
+
+# Correlation between genes and library size - all cancer
+
+```{r}
+corr.genes.librarySize.all.cancer <- lapply(
+  c(1:33),
+  function(x) {
+    all.test <- readRDS(paste0(
+      stat.summaries.path,
+      files[x])
+      )
+    corr.coeff <- as.data.frame(
+      do.call(cbind, all.test$corr.genes.librarySize)
+      )
+    corr.coeff$genes <- all.test$genes
+    corr.coeff$cancer <- rep(
+      gsub('.rds', '', strsplit(files[x], '_')[[1]][6]),
+      length(all.test$genes)
+      )
+    return(corr.coeff)
+  })
+common.genes <- unlist(lapply(
+  c(1:33),
+  function(x){
+    corr.genes.librarySize.all.cancer[[x]]$genes
+  }))
+common.genes <- names(which(table(common.genes) == 33))
+length(common.genes) # 13457
+
+corr.genes.librarySize.all.cancer <- lapply(
+  c(1:33),
+  function(x){
+    df <- corr.genes.librarySize.all.cancer[[x]]
+    df <- df[df$genes %in% common.genes, ]
+    df <- df[order(df$genes), ]
+  })
+
+### Raw data
+corr.genes.librarySize.rawCounts <- sapply(
+  c(1:33),
+  function(x){
+    cancer <- corr.genes.librarySize.all.cancer[[x]]$cancer[1]
+    df <- data.frame(cancer = corr.genes.librarySize.all.cancer[[x]]$HTseq_counts)
+    colnames(df) <- cancer
+    df
+  })
+corr.genes.librarySize.rawCounts <- do.call(
+  cbind,
+  corr.genes.librarySize.rawCounts
+  )
+
+### Saving the data
+
+saveRDS(
+  object = corr.genes.librarySize.rawCounts,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Corr_Genes_Libraryisze_AcrossAllCancers_RawCounts_HeatMapPlot.rds')
+  )
+corr.genes.librarySize.rawCounts <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Corr_Genes_Libraryisze_AcrossAllCancers_RawCounts_HeatMapPlot.rds')
+  )
+
+### HeatMap
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_Correlation_Genes_LibrarySize_rawCounts_AllCancers.tiff'),
+  width = 1800,
+  height = 3400,
+  res = 400
+  )
+h.raw.counts <- ComplexHeatmap::Heatmap(
+  matrix = corr.genes.librarySize.rawCounts,
+  show_row_dend = FALSE, 
+  show_column_dend = FALSE, 
+  column_names_gp = grid::gpar(fontsize = 9),
+  col = rev(RColorBrewer::brewer.pal(n = 11, name = 'BrBG')),
+  heatmap_legend_param = list(
+    # at = seq(0, 1, .2),
+    title = expression("Spearman's correlation coefficients"),
+    ncol = 1,
+    type = "grid",
+    grid_height = unit(4, "mm"),
+    direction = "horizontal",
+    labels_gp = grid::gpar(fontsize = 10),
+    legend_width = unit(4, "cm"),
+    title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  ))
+ComplexHeatmap::draw(h.raw.counts, heatmap_legend_side = "bottom")
+dev.off()
+
+row.order <- ComplexHeatmap::row_order(h.raw.counts)
+col.order <- ComplexHeatmap::column_order(h.raw.counts)
+
+### FPKM
+corr.genes.librarySize.fpkm <- sapply(
+  c(1:33),
+  function(x){
+    cancer <- corr.genes.librarySize.all.cancer[[x]]$cancer[1]
+    df <- data.frame(cancer = corr.genes.librarySize.all.cancer[[x]]$HTseq_FPKM)
+    colnames(df) <- cancer
+    df
+  })
+corr.genes.librarySize.fpkm <- do.call(
+  cbind,
+  corr.genes.librarySize.fpkm
+  )
+corr.genes.librarySize.fpkm <- corr.genes.librarySize.fpkm[row.order , col.order]
+
+
+# ### Saving the data
+saveRDS(
+  object = corr.genes.librarySize.fpkm,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Corr_Genes_Libraryisze_AcrossAllCancers_Fpkm_HeatMapPlot.rds')
+  )
+corr.genes.librarySize.fpkm <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Corr_Genes_Libraryisze_AcrossAllCancers_Fpkm_HeatMapPlot.rds')
+  )
+
+### HeatMap
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_Correlation_Genes_LibrarySize_FPKM_AllCancers.tiff'),
+  width = 1800,
+  height = 3400,
+  res = 400
+  )
+h.fpkm <- ComplexHeatmap::Heatmap(
+  matrix = corr.genes.librarySize.fpkm,
+  show_row_dend = FALSE, 
+  show_column_dend = FALSE, 
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_names_gp = grid::gpar(fontsize = 9),
+  col = rev(RColorBrewer::brewer.pal(n = 11, name = 'BrBG')),
+  heatmap_legend_param = list(
+    # at = seq(0, 1, .2),
+    title = expression("Spearman's correlation coefficients"),
+    ncol = 1,
+    type = "grid",
+    grid_height = unit(4, "mm"),
+    direction = "horizontal",
+    labels_gp = grid::gpar(fontsize = 10),
+    legend_width = unit(4, "cm"),
+    title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  ))
+ComplexHeatmap::draw(h.fpkm, heatmap_legend_side = "bottom")
+dev.off()
+
+### FPKM.UQ
+corr.genes.librarySize.fpkmUq <- sapply(
+  c(1:33),
+  function(x){
+    cancer <- corr.genes.librarySize.all.cancer[[x]]$cancer[1]
+    df <- data.frame(cancer = corr.genes.librarySize.all.cancer[[x]]$HTseq_FPKM.UQ)
+    colnames(df) <- cancer
+    df
+  })
+corr.genes.librarySize.fpkmUq <- do.call(
+  cbind,
+  corr.genes.librarySize.fpkmUq
+  )
+corr.genes.librarySize.fpkmUq <- corr.genes.librarySize.fpkmUq[row.order , col.order]
+
+### Saving the data
+saveRDS(
+  object = corr.genes.librarySize.fpkmUq,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Corr_Genes_Libraryisze_AcrossAllCancers_FpkmUq_HeatMapPlot.rds')
+  )
+corr.genes.librarySize.fpkmUq <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Corr_Genes_Libraryisze_AcrossAllCancers_FpkmUq_HeatMapPlot.rds')
+  )
+
+### HeatMap
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_Correlation_Genes_LibrarySize_FPKMUq_AllCancers.tiff'),
+  width = 1800,
+  height = 3400,
+  res = 400
+  )
+h.fpkm.uq <- ComplexHeatmap::Heatmap(
+  matrix = corr.genes.librarySize.fpkmUq,
+  show_row_dend = FALSE, 
+  show_column_dend = FALSE, 
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_names_gp = grid::gpar(fontsize = 9),
+  col = rev(RColorBrewer::brewer.pal(n = 11, name = 'BrBG')),
+  heatmap_legend_param = list(
+    # at = seq(0, 1, .2),
+    title = expression("Spearman's correlation coefficients"),
+    ncol = 1,
+    type = "grid",
+    grid_height = unit(4, "mm"),
+    direction = "horizontal",
+    labels_gp = grid::gpar(fontsize = 10),
+    legend_width = unit(4, "cm"),
+    title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  ))
+ComplexHeatmap::draw(h.fpkm.uq, heatmap_legend_side = "bottom")
+dev.off()
+```
+
+# Correlation between genes and purity - all cancer
+
+```{r}
+corr.genes.purity.all.cancer <- lapply(
+  c(1:33),
+  function(x) {
+    all.test <- readRDS(paste0(
+      stat.summaries.path,
+      files[x])
+      )
+    corr.coeff <- as.data.frame(
+      do.call(cbind, all.test$corr.genes.purity)
+      )
+    corr.coeff$genes <- all.test$genes
+    corr.coeff$cancer <- rep(
+      gsub('.rds', '', strsplit(files[x], '_')[[1]][6]),
+      length(all.test$genes)
+      )
+    return(corr.coeff)
+  })
+common.genes <- unlist(lapply(
+  c(1:33),
+  function(x){
+    corr.genes.purity.all.cancer[[x]]$genes
+  }))
+common.genes <- names(which(table(common.genes) == 33))
+length(common.genes) # 13457
+
+corr.genes.purity.all.cancer <- lapply(
+  c(1:33),
+  function(x){
+    df <- corr.genes.purity.all.cancer[[x]]
+    df <- df[df$genes %in% common.genes, ]
+    df <- df[order(df$genes), ]
+  })
+
+### Raw data
+corr.genes.purity.rawCounts <- sapply(
+  c(1:33),
+  function(x){
+    cancer <- corr.genes.purity.all.cancer[[x]]$cancer[1]
+    df <- data.frame(cancer = corr.genes.purity.all.cancer[[x]]$HTseq_counts)
+    colnames(df) <- cancer
+    df
+  })
+corr.genes.purity.rawCounts <- do.call(
+  cbind,
+  corr.genes.purity.rawCounts
+  )
+
+### Saving the data
+saveRDS(
+  object = corr.genes.purity.rawCounts,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Corr_Genes_Purity_AcrossAllCancers_RawCounts_HeatMapPlot.rds')
+  )
+corr.genes.purity.rawCounts <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Corr_Genes_Purity_AcrossAllCancers_RawCounts_HeatMapPlot.rds')
+  )
+
+### HeatMap
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_Correlation_Genes_Purity_rawCounts_AllCancers.tiff'),
+  width = 1800,
+  height = 3400,
+  res = 400
+  )
+h.raw.counts <- ComplexHeatmap::Heatmap(
+  matrix = corr.genes.purity.rawCounts,
+  show_row_dend = FALSE, 
+  show_column_dend = FALSE, 
+  column_names_gp = grid::gpar(fontsize = 9),
+  col = rev(RColorBrewer::brewer.pal(n = 11, name = 'BrBG')),
+  heatmap_legend_param = list(
+    # at = seq(0, 1, .2),
+    title = expression("Spearman's correlation coefficients"),
+    ncol = 1,
+    type = "grid",
+    grid_height = unit(4, "mm"),
+    direction = "horizontal",
+    labels_gp = grid::gpar(fontsize = 10),
+    legend_width = unit(4, "cm"),
+    title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  ))
+ComplexHeatmap::draw(h.raw.counts, heatmap_legend_side = "bottom")
+dev.off()
+
+row.order <- ComplexHeatmap::row_order(h.raw.counts)
+col.order <- ComplexHeatmap::column_order(h.raw.counts)
+
+### FPKM
+corr.genes.purity.fpkm <- sapply(
+  c(1:33),
+  function(x){
+    cancer <- corr.genes.purity.all.cancer[[x]]$cancer[1]
+    df <- data.frame(cancer = corr.genes.purity.all.cancer[[x]]$HTseq_FPKM)
+    colnames(df) <- cancer
+    df
+  })
+corr.genes.purity.fpkm <- do.call(
+  cbind,
+  corr.genes.purity.fpkm
+  )
+corr.genes.purity.fpkm <- corr.genes.purity.fpkm[row.order , col.order]
+
+### Saving the data
+saveRDS(
+  object = corr.genes.purity.fpkm,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Corr_Genes_Purity_AcrossAllCancers_FPKM_HeatMapPlot.rds')
+  )
+corr.genes.purity.fpkm <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Corr_Genes_Purity_AcrossAllCancers_FPKM_HeatMapPlot.rds')
+  )
+
+### HeatMap
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_Correlation_Genes_Purity_FPKM_AllCancers.tiff'),
+  width = 1800,
+  height = 3400,
+  res = 400
+  )
+h.fpkm <- ComplexHeatmap::Heatmap(
+  matrix = corr.genes.purity.fpkm,
+  show_row_dend = FALSE, 
+  show_column_dend = FALSE, 
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_names_gp = grid::gpar(fontsize = 9),
+  col = rev(RColorBrewer::brewer.pal(n = 11, name = 'BrBG')),
+  heatmap_legend_param = list(
+    # at = seq(0, 1, .2),
+    title = expression("Spearman's correlation coefficients"),
+    ncol = 1,
+    type = "grid",
+    grid_height = unit(4, "mm"),
+    direction = "horizontal",
+    labels_gp = grid::gpar(fontsize = 10),
+    legend_width = unit(4, "cm"),
+    title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  ))
+ComplexHeatmap::draw(h.fpkm, heatmap_legend_side = "bottom")
+dev.off()
+
+### FPKM.UQ
+corr.genes.purity.fpkmUq <- sapply(
+  c(1:33),
+  function(x){
+    cancer <- corr.genes.purity.all.cancer[[x]]$cancer[1]
+    df <- data.frame(cancer = corr.genes.purity.all.cancer[[x]]$HTseq_FPKM.UQ)
+    colnames(df) <- cancer
+    df
+  })
+corr.genes.purity.fpkmUq <- do.call(
+  cbind,
+  corr.genes.purity.fpkmUq
+  )
+corr.genes.purity.fpkmUq <- corr.genes.purity.fpkmUq[row.order , col.order]
+
+### Saving the data
+saveRDS(
+  object = corr.genes.purity.fpkmUq,
+  file = paste0(
+    pan.cancer.path,
+    'TCGA_PanCancer_Corr_Genes_Purity_AcrossAllCancers_FPKMUq_HeatMapPlot.rds')
+  )
+corr.genes.purity.fpkmUq <- readRDS(
+  file = paste0(
+    pan.cancer.path, 
+    'TCGA_PanCancer_Corr_Genes_Purity_AcrossAllCancers_FPKMUq_HeatMapPlot.rds')
+  )
+
+### HeatMap
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_HeatMap_Correlation_Genes_Purity_FPKMUq_AllCancers.tiff'),
+  width = 1800,
+  height = 3400,
+  res = 400
+  )
+h.fpkm.uq <- ComplexHeatmap::Heatmap(
+  matrix = corr.genes.purity.fpkmUq,
+  show_row_dend = FALSE, 
+  show_column_dend = FALSE, 
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_names_gp = grid::gpar(fontsize = 9),
+  col = rev(RColorBrewer::brewer.pal(n = 11, name = 'BrBG')),
+  heatmap_legend_param = list(
+    # at = seq(0, 1, .2),
+    title = expression("Spearman's correlation coefficients"),
+    ncol = 1,
+    type = "grid",
+    grid_height = unit(4, "mm"),
+    direction = "horizontal",
+    labels_gp = grid::gpar(fontsize = 10),
+    legend_width = unit(4, "cm"),
+    title_gp = grid::gpar(fontsize = 12, fontface = "bold")
+  ))
+ComplexHeatmap::draw(h.fpkm.uq, heatmap_legend_side = "bottom")
+dev.off()
+```
+
+# Medians of RLE of all cancer
+
+```{r}
+median.rle.raw.counts <- lapply(
+  c(1:33),
+  function(x) {
+    all.test <- readRDS(paste0(
+      stat.summaries.path, 
+      files[x])
+      )
+    rle.med <- data.frame(med.rle = all.test$rle$HTseq_counts$rle.med)
+    rle.med$cancer <- rep(
+      gsub('.rds', '', strsplit(files[x], '_')[[1]][6]), 
+      nrow(rle.med)
+      )
+    rle.med$n.sample <- c(1:nrow(rle.med))
+    return(rle.med)
+  })
+median.rle.raw.counts <- do.call(
+  rbind, 
+  median.rle.raw.counts
+  )
+
+scaleFUN <- function(x) sprintf("%.1f", x)
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_ScatterPlot_MediansOfRle_RawCounts_AllCancers.tiff'),
+  width = 2800,
+  height = 3400,
+  res = 400)
+ggplot(median.rle.raw.counts, aes(x = n.sample, y = med.rle)) +
+  geom_point(size = .5) +
+  geom_smooth(col = 'red') +
+  ylab('Medians of RLE') +
+  geom_hline(yintercept  = 0, col = 'darkgreen') +
+  xlab('Samples') +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3)) +
+  scale_y_continuous(labels=scaleFUN) +
+  facet_wrap(~cancer, scale = 'free') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black'),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 8, angle = 45),
+    axis.text.y = element_text(size = 8),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10, face = 2)
+  )
+dev.off()
+```
+
+# CPE, ESTIMATE and singscores purity
+
+```{r}
+all.purities <- lapply(
+  c(1:33), 
+  function(x) {
+    htseq.data <- readRDS(
+      paste0(
+        sum.expr.path,
+        all.files$sum.expr[x]))
+    keep.samples <- htseq.data$plates.status.cancer == 'yes' &
+      htseq.data$outlier.ls.cancer == 'no' &
+      htseq.data$tissue == 'cancer'
+    htseq.data <- htseq.data[, keep.samples]
+    if(sum(colnames(SummarizedExperiment::colData(htseq.data)) == 'CPE_Aran') == 1){
+      df <- data.frame(
+      CPE = htseq.data$CPE_Aran, 
+      Estimate = htseq.data$ESTIMATE_Aran, 
+      singscore = htseq.data$purity_HTseq_FPKM,
+      cancer = rep(all.files$cancer[x], ncol(htseq.data))
+      )
+    }
+    return(df)
+  })
+
+all.purities <- data.frame(do.call(rbind, all.purities))
+all.purities <- all.purities[complete.cases(all.purities) , ]
+tiff(paste0(
+  eda.uw.all.cancer.figPath,
+  'TCGA_AllCancers_ScatterPlot_DifferentPurityEstimate_AllCancers.tiff'),
+  width = 3000,
+  height = 3000,
+  res = 400)
+p1 <- ggplot(all.purities, aes(x = singscore, y = CPE)) +
+  geom_point(size = .9)  +
+  xlab('Tumour purity scores') +
+  ylab('CPE') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .3,
+    label.y.npc = .2,
+    method = 'spearman',
+    hjust = 0,
+    size = 4,
+    col = 'gray',
+    cor.coef.name = "rho"
+  ) +
+  facet_wrap( ~ cancer, nrow = 3) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black'),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 8, angle = 45),
+    axis.text.y = element_text(size = 8),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10, face = 2)
+  )
+
+p2 <- ggplot(all.purities, aes(x = singscore, y = Estimate)) +
+  geom_point(size = .9)  +
+  xlab('Tumour purity scores') +
+  ylab('ESTIMATE') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .3,
+    label.y.npc = .2,
+    method = 'spearman',
+    hjust = 0,
+    size = 4,
+    col = 'gray',
+    cor.coef.name = "rho") +
+  facet_wrap( ~ cancer, nrow = 3) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black'),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 8, angle = 45),
+    axis.text.y = element_text(size = 8),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10, face = 2)
+  )
+gridExtra::grid.arrange(p1, p2)
+dev.off()
+```
+
+
+
+

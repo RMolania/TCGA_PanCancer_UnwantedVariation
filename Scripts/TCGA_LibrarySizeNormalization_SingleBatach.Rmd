@@ -1,0 +1,586 @@
+---
+title: "TCGA_BRCA_Library size"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "15-02-2020"
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 5
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r knitr_init, echo=FALSE, results="asis"}
+library(knitr)
+library(rmdformats)
+library(DT)
+library(BiocStyle)
+options(max.print = "75")
+opts_chunk$set(
+  echo = FALSE,
+  prompt = FALSE,
+  comment = FALSE,
+  message = FALSE,
+  warning = FALSE)
+opts_knit$set(width = 65)
+```
+
+# R version
+
+```{r}
+# R.version
+
+# platform       x86_64-apple-darwin17.0     
+# arch           x86_64                      
+# os             darwin17.0                  
+# system         x86_64, darwin17.0          
+# status                                     
+# major          4                           
+# minor          1.1                         
+# year           2021                        
+# month          08                          
+# day            10                          
+# svn rev        80725                       
+# language       R                           
+# version.string R version 4.1.1 (2021-08-10)
+# nickname       Kick Things 
+
+```
+
+# Setup path
+
+```{r file-setUp, message=FALSE, include=FALSE, results=F}
+mainDir <- getwd()
+outPath <- "../output/"
+figPath <- "../figure/"
+dataPath <- "../data/"
+scriptPath <- "../script/"
+ifelse(
+  !dir.exists(file.path(mainDir, outPath)), 
+  dir.create(file.path(mainDir, outPath)),
+  FALSE
+  )
+ifelse(
+  !dir.exists(file.path(mainDir, figPath)), 
+  dir.create(file.path(mainDir, figPath)), 
+  FALSE
+  )
+ifelse(
+  !dir.exists(file.path(mainDir, dataPath)), 
+  dir.create(file.path(mainDir, dataPath)), 
+  FALSE
+  )
+ifelse(
+  !dir.exists(file.path(mainDir, scriptPath)), 
+  dir.create(file.path(mainDir, scriptPath)), 
+  FALSE
+  )
+options(max.print = 10000000)
+libSiz.norm.fig.path <- 'figure/TCGA_LibrarySizeNormalization/'
+```
+
+# UVM
+
+```{r}
+# Data prepration
+## reading data
+### TCGA BRCA RNAseq data
+uvm.se <- readRDS(
+  paste0(
+    '../data/TCGA_AllCancer_SummarizedExperiment/',
+    'TCGA_SummarizedExperiment_HTseq_UVM.rds'
+  )
+) #  56493 80 
+table(uvm.se$plate_RNAseq)
+table(uvm.se$year_mda)
+```
+
+# data counnts
+
+```{r}
+### data
+gene.annot <- as.data.frame(SummarizedExperiment::rowData(uvm.se))
+index <- gene.annot$gene_biotype_BioMart == 'protein_coding'
+gene.annot <- gene.annot[index , ]
+raw.counts <- as.matrix(SummarizedExperiment::assay(uvm.se, 'HTseq_counts'))
+fpkm <- as.matrix(SummarizedExperiment::assay(uvm.se, 'HTseq_FPKM'))
+fpkm.uq <- as.matrix(SummarizedExperiment::assay(uvm.se, 'HTseq_FPKM.UQ'))
+
+raw.counts <- raw.counts[index , ]
+row.names(raw.counts) <- gene.annot$hgnc_symbol_BioMart
+fpkm <- fpkm[index , ]
+fpkm.uq <- fpkm.uq[index , ]
+cpm.adj <- edgeR::cpm(y = raw.counts)
+lib.size <- log2(colSums(raw.counts))
+
+gene.libsize.raw <-
+  .corr.gene.variable(
+    expr.data = raw.counts,
+    is.log = FALSE,
+    variable = lib.size,
+    method = 'spearman',
+    n.cores = 3,
+    group = 'ls'
+  )
+
+
+gene.libsize.fpkm <-
+  .corr.gene.variable(
+    expr.data = fpkm,
+    is.log = FALSE,
+    variable = lib.size,
+    method = 'spearman',
+    n.cores = 3,
+    group = 'ls'
+  )
+
+gene.libsize.fpkm.uq <-
+  .corr.gene.variable(
+    expr.data = fpkm.uq,
+    is.log = FALSE,
+    variable = lib.size,
+    method = 'spearman',
+    n.cores = 3,
+    group = 'ls'
+  )
+
+gene.libsize.cpm <-
+  .corr.gene.variable(
+    expr.data = cpm.adj,
+    is.log = FALSE,
+    variable = lib.size,
+    method = 'spearman',
+    n.cores = 3,
+    group = 'ls'
+  )
+
+df.ls <- data.frame(
+  raw.data = gene.libsize.raw$ls_rho,
+  fpkm = gene.libsize.fpkm$ls_rho,
+  fpkm.uq = gene.libsize.fpkm.uq$ls_rho,
+  cpm = gene.libsize.cpm$ls_rho
+  )
+
+# ab_line <- function(x,y,...){
+#     points(x,y,...)
+#     abline(v = 0, h = 0, col = 'red')
+# }
+# tiff('TCGA_UVM_PairPlots.tiff',
+#   width = 3000,
+#   height = 3000,
+#   res = 400)
+# pairs(
+#   df.ls, 
+#   upper.panel =  NULL, 
+#   lower.panel = ab_line, 
+#   xlim = c(-1,1), 
+#   ylim = c(-1,1),
+#   labels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'CPM'),
+#   alpha = .5,
+#   col = 'grey30'
+#   )
+# dev.off()
+
+upperfun <- function(data,mapping){
+  ggplot(data = data, mapping = mapping) +
+    geom_point(size = .8, alpha = 0.3) +
+    geom_density2d() +
+    geom_vline(xintercept = .0, color = 'red')+
+    geom_hline(yintercept = .0, color = 'red')+
+    scale_y_continuous(limits = c(-1, 1)) +
+    scale_x_continuous(limits = c(-1, 1)) +
+    geom_abline(col = 'cyan') +
+    theme(
+      axis.line = element_line(colour = 'black', size = 1),
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 10),
+      axis.title.x = element_text(size = 55),
+      axis.title.y = element_text(size = 55),
+    )} 
+tiff(paste0(libSiz.norm.fig.path, 'TCGA_LibrarySizeNormalization_UVM_PairCorrelationPlots.tiff'),
+  width = 3000,
+  height = 3000,
+  res = 400)
+colnames(df.ls) <- c('Raw counts', 'FPKM', 'FPKM.UQ', 'CPM')
+GGally::ggpairs(
+  df.ls,
+  lower = list(continuous = GGally::wrap(upperfun)),
+  upper = NULL,
+  diag = NULL,
+  showStrips = TRUE,
+  switch = 'both'
+  ) +
+  theme(
+    strip.text.x = element_text(size = 15),
+    strip.text.y = element_text(size = 15),
+    )
+dev.off()
+
+# selected genes
+ls.gene <- as.data.frame(apply(
+  df.ls, 
+  2, 
+  function(x) {
+  high <- length(which(x > .3))
+  low <- length(which(x < -.3))
+  c(high, low)}
+  ))
+colnames(ls.gene) <- c('Raw counts', 'FPKM', 'FPKM.UQ', 'CPM')
+ls.gene$dir <- c('High', 'Low')
+ls.gene <- ls.gene %>% 
+  tidyr::pivot_longer(-dir, values_to = 'no', names_to = 'Datasets') %>% 
+  dplyr::mutate(Datasets = factor(Datasets, levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'CPM'))) %>% 
+  data.frame(.)
+tiff(paste0(libSiz.norm.fig.path, 'TCGA_LibrarySizeNormalization_UVM_BarPlot_CorrrelatioDifferences.tiff'),
+  width = 3000,
+  height = 3000,
+  res = 400)
+ggplot(ls.gene, aes(x = Datasets, y = no, group = dir, fill = dir)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(
+    labels = c("> 0.3", " < - 0.3"), 
+    values = c("darkgreen", "navy"), 
+    name = 'Spearman correlation') +
+  ylab('count') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 18),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    legend.text = element_text(size = 25),
+    strip.text = element_text(size = 15),
+    legend.title=element_text(size = 20),
+    plot.title = element_text(size = 25),
+  )
+dev.off()
+
+which(gene.libsize.cpm$ls_rho < .1 & gene.libsize.raw$ls_rho > .85)
+which(gene.libsize.cpm$ls_rho > .72 & gene.libsize.raw$ls_rho > .85)
+which(gene.libsize.cpm$ls_rho < -.65 & gene.libsize.raw$ls_rho > .2)
+which(gene.libsize.cpm$ls_rho < -.5 & gene.libsize.raw$ls_rho < .1)
+
+selected.gene <- c(1155, 14006, 2158,851) 
+gene.annot$hgnc_symbol_BioMart[selected.gene]
+
+library(tidyverse)
+for(i in 1:4){
+  gene <- selected.gene[i]
+  df <-
+  data.frame(
+    Raw.counts = raw.counts[gene ,],
+    FPKM = fpkm[gene ,],
+    FPKM.UQ = fpkm.uq[gene ,],
+    CPM = cpm.adj[gene,],
+    lib = lib.size
+  )
+  df <- df %>%
+    tidyr::pivot_longer(-lib, names_to = 'Datasets', values_to = 'expr') %>%
+    dplyr::mutate(Datasets = factor(Datasets, levels = c('Raw.counts', 'FPKM', 'FPKM.UQ', 'CPM'))) %>%
+    data.frame(.)
+  p <- ggplot(df, aes(x = lib, y = log2(expr + 1))) +
+    geom_point() +
+    facet_wrap( ~ Datasets, scale = 'free', ncol = 4) +
+    ggpubr::stat_cor(
+      aes(label = ..r.label..),
+      label.x.npc = .01,
+      label.y.npc = .9,
+      method = 'spearman',
+      hjust = 0,
+      size = 6,
+      r.digits = .1,
+      col = 'red',
+      cor.coef.name = "rho"
+    ) +
+    geom_smooth(
+      method = 'lm',
+      formula = y ~ x,
+      col = 'red',
+      se = T ) +
+    ggtitle(gene.annot$hgnc_symbol_BioMart[gene]) +
+    ylab(expression(Log[2] ~ 'gene expression')) +
+    xlab(expression(Log[2] ~ 'library size')) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1.2),
+      legend.position = "bottom",
+      axis.text.x = element_text(size = 18),
+      axis.text.y = element_text(size = 18),
+      axis.title.x = element_text(size = 25),
+      axis.title.y = element_text(size = 25),
+      strip.text = element_text(size = 25),
+      plot.title = element_text(size = 25),
+    )
+  tiff(paste0(
+    libSiz.norm.fig.path, 
+    'TCGA_LibrarySizeNormalization_UVM_ScatterPlot_CorrLsGene',
+    gene.annot$hgnc_symbol_BioMart[gene], '.tiff') ,
+  width = 6000,
+  height = 1500,
+  res = 400)
+  print(p)
+  dev.off()
+}
+```
+
+# KICH
+
+```{r}
+# Data prepration
+## reading data
+### TCGA BRCA RNAseq data
+kich.se <- readRDS(
+  paste0(
+    '../data/TCGA_AllCancer_SummarizedExperiment/',
+    'TCGA_SummarizedExperiment_HTseq_KICH.rds'
+  )
+) #  56493 89 
+table(kich.se$plate_RNAseq)
+table(kich.se$year_mda)
+```
+
+# data counnts
+
+```{r}
+### data
+gene.annot <- as.data.frame(SummarizedExperiment::rowData(kich.se))
+index <- gene.annot$gene_biotype_BioMart == 'protein_coding'
+gene.annot <- gene.annot[index , ]
+raw.counts <- as.matrix(SummarizedExperiment::assay(kich.se, 'HTseq_counts'))
+fpkm <- as.matrix(SummarizedExperiment::assay(kich.se, 'HTseq_FPKM'))
+fpkm.uq <- as.matrix(SummarizedExperiment::assay(kich.se, 'HTseq_FPKM.UQ'))
+
+raw.counts <- raw.counts[index , ]
+fpkm <- fpkm[index , ]
+fpkm.uq <- fpkm.uq[index , ]
+cpm.adj <- edgeR::cpm(y = raw.counts)
+lib.size <- log2(colSums(raw.counts))
+
+index <- lib.size > 25
+raw.counts <- raw.counts[ , index]
+fpkm <- fpkm[ , index]
+fpkm.uq <- fpkm.uq[ , index]
+cpm.adj <- cpm.adj[ , index]
+lib.size <- lib.size[ index]
+
+gene.libsize.raw <-
+  .corr.gene.variable(
+    expr.data = raw.counts,
+    is.log = FALSE,
+    variable = lib.size,
+    method = 'spearman',
+    n.cores = 3,
+    group = 'ls'
+  )
+gene.libsize.fpkm <-
+  .corr.gene.variable(
+    expr.data = fpkm,
+    is.log = FALSE,
+    variable = lib.size,
+    method = 'spearman',
+    n.cores = 3,
+    group = 'ls'
+  )
+gene.libsize.fpkm.uq <-
+  .corr.gene.variable(
+    expr.data = fpkm.uq,
+    is.log = FALSE,
+    variable = lib.size,
+    method = 'spearman',
+    n.cores = 3,
+    group = 'ls'
+  )
+
+gene.libsize.cpm <-
+  .corr.gene.variable(
+    expr.data = cpm.adj,
+    is.log = FALSE,
+    variable = lib.size,
+    method = 'spearman',
+    n.cores = 3,
+    group = 'ls'
+  )
+
+df.ls <- data.frame(
+  raw.data = gene.libsize.raw$ls_rho,
+  fpkm = gene.libsize.fpkm$ls_rho,
+  fpkm.uq = gene.libsize.fpkm.uq$ls_rho,
+  cpm = gene.libsize.cpm$ls_rho
+  )
+
+upperfun <- function(data,mapping){
+  ggplot(data = data, mapping = mapping) +
+    geom_point(size = .8, alpha = 0.3) +
+    geom_density2d() +
+    geom_vline(xintercept = .0, color = 'red')+
+    geom_hline(yintercept = .0, color = 'red')+
+    scale_y_continuous(limits = c(-1, 1)) +
+    scale_x_continuous(limits = c(-1, 1)) +
+    geom_abline(col = 'cyan') +
+    theme(
+      axis.line = element_line(colour = 'black', size = 1),
+      axis.text.x = element_text(size = 10),
+      axis.text.y = element_text(size = 10),
+      axis.title.x = element_text(size = 55),
+      axis.title.y = element_text(size = 55),
+    )} 
+tiff(paste0(libSiz.norm.fig.path, 'TCGA_LibrarySizeNormalization_KICH_PairCorrelationPlots.tiff'),
+  width = 3000,
+  height = 3000,
+  res = 400)
+colnames(df.ls) <- c('Raw counts', 'FPKM', 'FPKM.UQ', 'CPM')
+GGally::ggpairs(
+  df.ls,
+  lower = list(continuous = GGally::wrap(upperfun)),
+  upper = NULL,
+  diag = NULL,
+  showStrips = TRUE,
+  switch = 'both'
+  ) +
+  theme(
+    strip.text.x = element_text(size = 15),
+    strip.text.y = element_text(size = 15),
+    )
+dev.off()
+
+# group 1
+which(gene.libsize.cpm$ls_rho < .3 & gene.libsize.raw$ls_rho > .8)
+which(gene.libsize.cpm$ls_rho > .7 & gene.libsize.raw$ls_rho > .85)
+which(gene.libsize.cpm$ls_rho < -.6 & gene.libsize.raw$ls_rho > .2)
+which(gene.libsize.cpm$ls_rho < -.5 & gene.libsize.raw$ls_rho < .1)
+
+selected.gene <- c(1037, 6970, 8352,45) 
+gene.annot$hgnc_symbol_BioMart[selected.gene]
+
+for(i in 1:4){
+  gene <- selected.gene[i]
+  df <-
+  data.frame(
+    Raw.counts = raw.counts[gene ,],
+    FPKM = fpkm[gene ,],
+    FPKM.UQ = fpkm.uq[gene ,],
+    CPM = cpm.adj[gene,],
+    lib = lib.size
+  )
+  df <- df %>%
+    tidyr::pivot_longer(-lib, names_to = 'Datasets', values_to = 'expr') %>%
+    dplyr::mutate(Datasets = factor(Datasets, levels = c('Raw.counts', 'FPKM', 'FPKM.UQ', 'CPM'))) %>%
+    data.frame(.)
+  p <- ggplot(df, aes(x = lib, y = log2(expr + 1))) +
+    geom_point() +
+    facet_wrap( ~ Datasets, scale = 'free', ncol = 4) +
+    ggpubr::stat_cor(
+      aes(label = ..r.label..),
+      label.x.npc = .01,
+      label.y.npc = .9,
+      method = 'spearman',
+      hjust = 0,
+      size = 6,
+      r.digits = .1,
+      col = 'red',
+      cor.coef.name = "rho"
+    ) +
+    geom_smooth(
+      method = 'lm',
+      formula = y ~ x,
+      col = 'red',
+      se = T ) +
+    ggtitle(gene.annot$hgnc_symbol_BioMart[gene]) +
+    ylab(expression(Log[2] ~ 'gene expression')) +
+    xlab(expression(Log[2] ~ 'library size')) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1.2),
+      legend.position = "bottom",
+      axis.text.x = element_text(size = 18),
+      axis.text.y = element_text(size = 18),
+      axis.title.x = element_text(size = 25),
+      axis.title.y = element_text(size = 25),
+      strip.text = element_text(size = 25),
+      plot.title = element_text(size = 25),
+    )
+  tiff(paste0(
+    libSiz.norm.fig.path, 
+    'TCGA_LibrarySizeNormalization_KICH_ScatterPlot_CorrLsGene',
+    gene.annot$hgnc_symbol_BioMart[gene], '.tiff') ,
+  width = 6000,
+  height = 1500,
+  res = 400)
+  print(p)
+  dev.off()
+}
+
+
+
+# selected genes
+ls.gene <- as.data.frame(apply(
+  df.ls, 
+  2, 
+  function(x) {
+  high <- length(which(x > .3))
+  low <- length(which(x < -.3))
+  c(high, low)}
+  ))
+colnames(ls.gene) <- c('Raw counts', 'FPKM', 'FPKM.UQ', 'CPM')
+ls.gene$dir <- c('High', 'Low')
+ls.gene <- ls.gene %>% 
+  tidyr::pivot_longer(-dir, values_to = 'no', names_to = 'Datasets') %>% 
+  dplyr::mutate(Datasets = factor(Datasets, levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'CPM'))) %>% 
+  data.frame(.)
+tiff(paste0(libSiz.norm.fig.path, 'TCGA_LibrarySizeNormalization_KICH_BarPlot_CorrrelatioDifferences.tiff'),
+  width = 3000,
+  height = 3000,
+  res = 400)
+ggplot(ls.gene, aes(x = Datasets, y = no, group = dir, fill = dir)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(
+    labels = c("> 0.3", " < - 0.3"), 
+    values = c("darkgreen", "navy"), 
+    name = 'Spearman correlation') +
+  ylab('count') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 18),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    legend.text = element_text(size = 25),
+    strip.text = element_text(size = 15),
+    legend.title=element_text(size = 20),
+    plot.title = element_text(size = 25),
+  )
+dev.off()
+
+```
+
+

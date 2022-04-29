@@ -1,0 +1,1146 @@
+---
+title: "Using RUV-III-PRPS to integrate RNA-Seq data from multiple studies"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab, Bioinformatics, WEHI.
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "15-02-2020"
+output:
+  rmdformats::readthedown:
+    code_folding: hide
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date())
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style type="text/css">
+h1.title {
+  font-size: 28px;
+  color: DarkRed;
+}
+h1 { /* Header 1 */
+  font-size: 24px;
+  color: DarkBlue;
+}
+h2 { /* Header 2 */
+    font-size: 20px;
+  color: DarkBlue;
+}
+h3 { /* Header 3 */
+    font-size: 18px;
+  color: DarkBlue;
+}
+h4 { /* Header 3 */
+    font-size: 16px;
+  color: DarkBlue;
+}
+</style>
+
+<style>
+p.caption {
+  font-size: 46em;
+  font-style: italic;
+  color: black;
+}
+</style>
+
+```{r knitr_init, echo=FALSE, results="asis"}
+library(knitr)
+library(rmdformats)
+library(DT)
+library(BiocStyle)
+```
+
+```{r setup, include=F}
+knitr::opts_chunk$set(
+  tidy = FALSE,
+  fig.width = 10,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+
+# Introduction
+We use RUV-III with PRPS to remove unwanted variation from RNA-seq data that comes from multiple studies. 
+In this analysis, we  normalize three large breast cancer RNA-seq datasets including TCGA and two cohorts from Brueffer C et.al studies [REF]. We did not have access to the raw counts data of Brueffer C et.al studies, then we perform our normalization on the FPKM counts of all three studies. 
+# Data prepration
+We obtain two RNA-seq data from Brueffer C et.al studies using the GEOquery R package.
+# GSE81538
+## RNA-seq data
+
+```{r}
+# data.path <- dir.create('BulkRNAseq')
+data.path <- 'BulkRNAseq/'
+GEOquery::getGEOSuppFiles(
+  GEO = "GSE81538",
+  baseDir = data.path
+  )
+data.gse81538 <- data.table::fread(
+  input = paste0(
+    data.path, 
+    'GSE81538/', 
+    'GSE81538_gene_expression_405_transformed.csv.gz') 
+  ) %>% 
+  data.frame()
+row.names(data.gse81538) <- data.gse81538$V1
+data.gse81538 <- data.gse81538[, -1] # 18802   405
+# max(data.gse81538) 16.27068 and min(data.gse81538s) -3.321928
+```
+
+## sample information
+
+```{r}
+Sys.setenv("VROOM_CONNECTION_SIZE" = 7048576 * 2)
+geo.obj.gse81538 <-  GEOquery::getGEO(
+  GEO = "GSE81538"
+  )
+sample.annot.gse81538 <- Biobase::pData(
+  object = geo.obj.gse81538[[1]]
+  )
+all.equal(
+  colnames(data.gse81538), 
+  sample.annot.gse81538$title
+  )
+row.names(sample.annot.gse81538) <- sample.annot.gse81538$title
+```
+
+# GSE96058
+## RNA-seq data
+
+```{r}
+options(timeout = 10^7)
+GEOquery::getGEOSuppFiles(
+  GEO = "GSE96058",
+  baseDir = data.path
+  )
+data.gse96058 <- data.table::fread(
+  input = paste0(
+    data.path, 
+    'GSE96058/', 
+    "GSE96058_gene_expression_3273_samples_and_136_replicates_transformed.csv.gz") 
+  ) %>% 
+  data.frame()
+row.names(data.gse96058) <- data.gse96058$V1
+data.gse96058 <- data.gse96058[, -1] # 30865  3409
+```
+
+## sample information
+
+```{r}
+Sys.setenv("VROOM_CONNECTION_SIZE" = 14048576 * 2)
+geo.obj.gse96058 <-  GEOquery::getGEO(
+  GEO = "GSE96058"
+  )
+sample.annot.gse96058 <- Biobase::pData(
+  object = geo.obj.gse96058[[1]]
+  )
+row.names(sample.annot.gse96058) <- sample.annot.gse96058$title
+common.samples <- intersect(
+  colnames(data.gse96058), 
+  sample.annot.gse96058$title
+  )
+sample.annot.gse96058 <- sample.annot.gse96058[common.samples , ]
+data.gse96058 <- data.gse96058[ , common.samples]
+```
+
+# TCGA BRCA RNA-seq
+# The TCGA BRCA gene expression data
+## RNA-seq data
+We load the TCGA_SummarizedExperiment_HTseq_BRCA.rds file. This is a SummarizedExperiment object that contains:\
+**assays:**\
+-Raw counts\
+-FPKM\
+-FPKM.UQ\
+**colData:**\
+-Batch information\
+-Clinical information (collected from different resources)\
+**rowData:**\
+-Genes' details (GC, chromosome, ...)\
+-Several lists of housekeeping genes\
+  
+The lists of housekeeping genes might be suitable to use as negative control genes (NCG) for the RUV-III normalization.
+```{r}
+brca.se <- readRDS('TCGA_SummarizedExperiment_HTseq_BRCA.rds')
+```
+
+## Lowly expressed genes
+We identify lowly expressed genes in cancer and normal samples separately. Genes with at least 15 raw counts in at least 10% of cancer and normal samples are retained for down-stream analyses. These details are saved in the "keep.cancer" and 'keep.normal' columns of the gene annotation file in the SummarizedExperiment object.
+
+```{r LowlyExprGene,  warning=F, message=F, error=F, }
+normal.tissues <- SummarizedExperiment::colData(
+  brca.se
+  )$tissue == 'normal'
+cancer.tissues <- SummarizedExperiment::colData(
+  brca.se
+  )$tissue == 'cancer'
+keep.genes.normal <- apply(
+  SummarizedExperiment::assay(brca.se[ , normal.tissues], 'HTseq_counts'), 
+  1, 
+  function(x) length(x[x > 15]) >= round(.11*sum(normal.tissues), digits = 0)
+  )
+keep.genes.normal <- names(keep.genes.normal[keep.genes.normal == TRUE])
+
+keep.genes.cancer <- apply(
+  SummarizedExperiment::assay(brca.se[ , cancer.tissues], 'HTseq_counts'), 
+  1, 
+  function(x) length(x[x > 15]) >= round(.1*sum(cancer.tissues), digits = 0)
+  )
+keep.genes.cancer <- names(keep.genes.cancer[keep.genes.cancer == TRUE])
+```
+
+#### Keep protein conding genes
+We also keep only protein coding genes. This detail can be found in the "gene_type" column of the gene annotation file.This is a arbitrary filtering, any gene_type of interest can be retained in the data.
+
+```{r keepProteinCoding, message=FALSE, warning=F}
+proteinCoding.index <- as.data.frame(
+  SummarizedExperiment::rowData(brca.se)
+  )$gene_type. == 'protein.coding'
+keep.proteinCoding <- as.data.frame(
+  SummarizedExperiment::rowData(brca.se)
+  )$gene_id.v[proteinCoding.index]
+selected.genes <- intersect(
+  unique(c(keep.genes.normal, keep.genes.cancer)),
+  keep.proteinCoding
+  )
+SummarizedExperiment::rowData(brca.se)$selected.genes <- 'remove'
+SummarizedExperiment::rowData(brca.se)$selected.genes[
+  SummarizedExperiment::rowData(brca.se)$gene_id.v %in% selected.genes
+  ] <- 'keep'
+```
+
+#### Remove genes that have no or duplicated ENTREZ or gene symbol ids
+Further, we remove genes that have no or duplicated ENTREZ gene id or gene symbol.
+
+```{r Enterz, message=FALSE, warning=F}
+### entrez ids
+SummarizedExperiment::rowData(brca.se)$entrezgene.use <- 'keep'
+na.duplicated <- is.na(SummarizedExperiment::rowData(brca.se)$entrezgene_id_BioMart) |
+  duplicated(SummarizedExperiment::rowData(brca.se)$entrezgene_id_BioMart)
+SummarizedExperiment::rowData(brca.se)$entrezgene.use[na.duplicated] <- 'remove'
+
+### gene symbol
+SummarizedExperiment::rowData(brca.se)$geneName.use <- 'keep'
+na.duplicated <- is.na(SummarizedExperiment::rowData(brca.se)$gene_name.) |
+  duplicated(SummarizedExperiment::rowData(brca.se)$gene_name.)
+SummarizedExperiment::rowData(brca.se)$geneName.use[na.duplicated] <- 'remove'
+
+keep.genes <- SummarizedExperiment::rowData(brca.se)$entrezgene.use == 'keep' &
+  SummarizedExperiment::rowData(brca.se)$geneName.use == 'keep' &
+  SummarizedExperiment::rowData(brca.se)$selected.genes == 'keep'
+brca.se <- brca.se[ keep.genes, ] # 16537  1222
+```
+
+#### Keep plates with at least 2 samples
+The BRCA RNA-seq study involved 1180  assays generated using 38 plates over 5 years[(R.Molania, bioRxiv, 2021)](https://www.biorxiv.org/content/10.1101/2021.11.01.466731v1.article-metrics). We keep plates with at least three samples for down-stream analyses.
+
+```{r KeepPlates, message=FALSE, warning=F, error=F}
+keep.plates <- names(which(table(brca.se$plate_RNAseq) > 2))
+keep.plates <- brca.se$plate_RNAseq %in% keep.plates
+brca.se <- brca.se[ , keep.plates]
+```
+
+### PAM50 subtype
+Breast cancers intrinsic subtypes including HER2-enriched, Basal-like, Luminal A, Luminal B,  and Normal-like, are based on a 50-gene expression signatures (PAM50).\
+Here, we add the PAM50 subtypes annotations obtained from the TCGA BRCA research network. later, we will use different approaches to identify the PAM50 subtypes in the TCGA BRCA RNA-Seq data.
+
+```{r}
+brca.pam50Calls <- read.delim('tcga.brca.pam50.calls.ucf.txt')
+row.names(brca.pam50Calls) <- brca.pam50Calls$Barcode
+### Remove  samples
+brca.pam50Calls <- droplevels(
+  brca.pam50Calls[brca.pam50Calls$Use == 'YES' , ]
+  )
+### common samples
+common.samples <- intersect(
+  colnames(brca.se),
+  brca.pam50Calls$Barcode
+  )
+brca.pam50Calls <- brca.pam50Calls[common.samples , ]
+brca.se <- brca.se[ , common.samples]
+
+col.names <- colnames(brca.pam50Calls)
+for(i in 1:length(col.names)){
+  SummarizedExperiment::colData(brca.se)[ , col.names[i]] <- brca.pam50Calls[ , i]
+}
+
+remove.sample <- which(
+  SummarizedExperiment::colData(brca.se)$Tissue.Type == 'adjacent normal' &
+  SummarizedExperiment::colData(brca.se)$Call == 'LumA'
+  )
+brca.se <- brca.se[ , -remove.sample]
+
+normal.samples <- SummarizedExperiment::colData(
+  brca.se
+  )$Tissue.Type == 'adjacent normal'
+SummarizedExperiment::colData(
+  brca.se
+  )$Call[normal.samples] <- 'Adjacent normal'
+SummarizedExperiment::colData(
+  brca.se
+  )$Call[SummarizedExperiment::colData(
+    brca.se
+    )$Call == 'Normal'] <- 'Normal like'
+SummarizedExperiment::colData(brca.se)$Call <- factor(
+  SummarizedExperiment::colData(brca.se)$Call,
+  levels = c(
+    'Adjacent normal' ,
+    'Basal',
+    'Her2',
+    'LumA',
+    'LumB',
+    'Normal like')
+  )
+```
+
+# Combine the studies
+## expressionn data
+Here, we cobnibe the FPKM counts of different stduies after removing lowly expressed genes. 
+
+```{r}
+cancer.tissues <- brca.se$tissue == 'cancer'
+tcga.fpkm <- SummarizedExperiment::assay(brca.se[ , cancer.tissues], 'HTseq_FPKM')
+tcga.gene.annot <- as.data.frame(
+  SummarizedExperiment::rowData(brca.se)
+  )
+row.names(tcga.fpkm) <-tcga.gene.annot$hgnc_symbol_BioMart
+common.genes <- Reduce(
+  intersect, 
+  list(
+    a = row.names(tcga.fpkm), 
+    b = row.names(data.gse96058), 
+    c = row.names(data.gse81538))
+  )
+length(common.genes) # 15032
+all.dataset <- as.matrix(cbind(
+  log2(tcga.fpkm[common.genes , ] + 1),
+  data.gse96058[common.genes , ], 
+  data.gse81538[common.genes , ]
+  )) # 15032  4560
+```
+
+## Sample information
+here, we create a sample information for all the studies. 
+
+
+```{r}
+sample.info <- data.frame(
+  study = c(
+    rep('TCGA', ncol(tcga.fpkm)),
+    rep('GSE96058', ncol(data.gse96058)),
+    rep('GSE81538', ncol(data.gse81538))
+    ),
+  pam50 = unlist(list(
+    brca.se$Call[cancer.tissues], 
+    factor(sample.annot.gse96058$`pam50 subtype:ch1`), 
+    factor(sample.annot.gse81538$`pam50 subtype:ch1`))),
+  samples = c(colnames(tcga.fpkm), colnames(data.gse96058), colnames(data.gse81538))
+  )
+sample.info$pam50[sample.info$pam50 == 'Normal'] <- 'Normal like'
+sample.info <- droplevels(sample.info)
+sample.info$pam50 <- factor(
+  sample.info$pam50, 
+  levels = c(
+    'Basal',
+    'Her2',
+    'LumA',
+    'LumB',
+    'Normal like'))
+
+gene.annot <- tcga.gene.annot[
+  tcga.gene.annot$hgnc_symbol_BioMart %in% row.names(all.dataset), 
+  ]
+all.equal(
+  gene.annot$hgnc_symbol_BioMart, 
+  row.names(all.dataset)
+  )
+```
+
+<!-- # Tumour purity estimates -->
+<!-- Here we use the immune and stromla gene signature to estimate tumour purity. -->
+
+<!-- ```{r} -->
+<!-- purity.sig <- gene.annot$immnue == 'yes' | gene.annot$stromal == 'yes' -->
+<!-- purity.sig <- gene.annot$hgnc_symbol_BioMart[purity.sig] -->
+<!-- purity.sig <- purity.sig[!is.na(purity.sig)] -->
+<!-- rank.data <- singscore::rankGenes(all.dataset) -->
+<!-- purity.scores <- singscore::simpleScore( -->
+<!--   rankData = rank.data, -->
+<!--   upSet = purity.sig, -->
+<!--   centerScore = FALSE -->
+<!--   ) -->
+<!-- sample.info$purity <- 1- purity.scores$TotalScore -->
+<!-- ``` -->
+
+# Indentification of unwanted variation
+We first need to identify sources of unwanted variation in order to create PRPS for RUV-III normalization. We used plates as batches for the TCGA BRCA RNA-Seq data and the RLE medians (see Methods) within each of the other two studies to identify batches. Their medians were clustered into 3 groups within each study. We performed PCA within each study using a set of RNA-seq
+
+```{r}
+set.seed(011121132)
+within.study.batches <- lapply(
+  c('GSE96058', 'GSE81538'), 
+  function(x){
+    rle <- .rle.comp(
+      expr.data = all.dataset[, sample.info$study == x],
+      is.log = TRUE)
+    sub.batch <- stats::kmeans(
+      x = rle$rle.med, 
+      centers = 3
+      )$cluster
+    sub.batch <- paste0(x,'_batch_', sub.batch)
+    sub.batch
+  })
+sample.info$batch <- unlist(list(
+  factor(brca.se$plate_RNAseq[cancer.tissues]),
+  factor(unlist(within.study.batches))
+))
+```
+
+# Normalizations
+## Quantile
+
+```{r}
+brca.quan <- preprocessCore::normalize.quantiles(x = all.dataset)
+```
+
+## Upper-quartile
+
+```{r}
+brca.uq <- EDASeq::betweenLaneNormalization(
+  x = all.dataset,
+  which = 'upper'
+  )
+```
+
+## RUV-III-PRPS
+### PRPS map
+
+```{r}
+brca.fig.path <- 'Figure/MultiStudies/'
+library(tidyverse)
+df_count <- sample.info %>%
+    dplyr::count(batch, pam50)
+
+df_count$use <- 'Un-selected'
+df_count$use[df_count$n > 2] <- 'Selected'
+tiff(paste0(
+  brca.fig.path, 
+  'PRPSmap_PerStudy.tiff'),
+  width = 3500,
+  height = 1500,
+  res = 400
+  )
+ggplot(df_count, aes(x = batch, y = pam50)) +
+  geom_count(aes(color = use)) +
+  geom_text(aes(
+    label = n,
+    hjust = 0.5,
+    vjust = 0.5
+  )) +
+  xlab('Batches') +
+  ylab('Biological groups') +
+  theme_bw()+
+  theme(
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 15),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 8, angle = 45, vjust = 1, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10),
+    legend.position = 'none'
+  )
+dev.off()  
+```
+
+### PRPS
+
+```{r }
+row.names(sample.info) <- sample.info$samples
+prps <- .CreatePseudoSamplesForLsPurityBatch(
+    expr.data = all.dataset,
+    sample.info = sample.info,
+    batch = 'batch',
+    biology = 'pam50',
+    include.ls = FALSE,
+    include.purity = FALSE,
+    minSamplesPerBatchPS = 3
+    )
+prps <- prps$ps.batch
+colnames(prps) <- unlist(lapply(
+  colnames(prps), 
+  function(x){
+    paste(strsplit(x, '_')[[1]][1], collapse = '_')
+  }))
+dim(prps) #15032   128
+```
+
+## Negative control genes
+
+```{r }
+ncg <- row.names(all.dataset) %in%  
+  gene.annot$hgnc_symbol_BioMart[gene.annot$rnaseq.hk == 'yes']
+sum(ncg) # 3426
+```
+
+## RUV-III normalization
+
+```{r}
+Yrep <- t(prps)
+rep.matrix <- ruv::replicate.matrix(row.names(Yrep))
+ruv.iii.prps <- fastRUV_III_PRPS(
+  Y = t(all.dataset),
+  Yrep = Yrep,
+  M = rep.matrix,
+  ctl = ncg, 
+  k = 3, 
+  eta = NULL,
+  return.info = TRUE
+  )
+ruv.iii.prps.norm <- t(ruv.iii.prps$newY[1:ncol(all.dataset) , ])
+```
+
+# Statistical summary
+
+```{r}
+all.norms <- list(
+  FPKM = all.dataset,
+  Quantile = brca.quan,
+  UQ = brca.uq,
+  RUV_III = ruv.iii.prps.norm
+)
+norm.methods <- names(all.norms)
+norm.names <- c(
+  'FPKM',
+  'UQ',
+  'Quantile',
+  'ComBat',
+  'RUV-III-PRPS'
+  )
+```
+
+## PCA
+
+```{r}
+set.seed(211211030)
+pca.all <- lapply(
+  norm.methods, 
+  function(x){
+    .pca.fast(data = all.norms[[x]], nPcs = 10, is.log = TRUE)
+  })
+names(pca.all) <- norm.methods
+```
+
+## RLE
+
+```{r}
+rle.all <- lapply(
+  norm.methods, 
+  function(x){
+    .rle.comp(expr.data = all.norms[[x]], is.log = TRUE)
+  })
+names(rle.all) <- norm.methods
+```
+
+
+# Normalization assessments
+## PAM50 subtypes
+### Vector correlations
+```{r}
+pam50.dv <- fastDummies::dummy_cols(sample.info$pam50)
+pam50.dv <- pam50.dv[ , c(2:ncol(pam50.dv))]
+brca.pam50.cca <- lapply(
+  norm.methods, 
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u
+  sapply(
+    1:10,
+    function(y){
+      cca.time <- stats::cancor(
+        x = pcs[, 1:y, drop = FALSE],
+        y = pam50.dv)
+      1 - prod(1 - cca.time$cor^2)
+    })
+  })
+names(brca.pam50.cca) <- norm.methods
+pcs.pam50.cca <- as.data.frame(brca.pam50.cca) %>%
+  dplyr::rename(
+    FPKM = FPKM,
+    Quantile = Quantile,
+    UQ = UQ,
+    'RUV-III' = RUV_III
+  ) %>%
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'vec.corr') %>%
+  dplyr::mutate(
+    datasets = factor(
+      datasets,
+      levels = c(
+        'FPKM',
+        'Quantile',
+        'UQ',
+        'RUV-III'))
+    ) %>%
+  data.frame(.)
+# Plot
+tiff(paste0(
+  brca.fig.path,
+  'RUV-III-PRPS_MultipleStudies_BRCA_Pam50_CCa.tiff'),
+  width = 2400,
+  height = 1400,
+  res = 400
+  )
+ggplot(pcs.pam50.cca, aes(x = pcs, y = vec.corr, group = datasets)) +
+  geom_line(aes(color = datasets), size = 1) +
+  geom_point(aes(color = datasets), size = 3) +
+  xlab('PCs') +
+  ylab (expression("Vector correlation")) +
+  scale_color_manual(
+    values=c(dataSets.colors),
+    labels = c('FPKM', 'Quantile','UQ', 'RUV-III'),
+    name = 'Datastes') +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.x = element_text(size = 12, angle = 45, vjust = 1, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+dev.off()
+```
+
+### Silhouette coefficient  ann ARI index analyses
+
+```{r}
+## Silhouette
+pam50.silCoef <-  lapply(
+  norm.methods, 
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.all[[x]]$sing.val$u, 
+      variable  = sample.info$pam50, 
+      nPCs = 3
+      )
+    })
+names(pam50.silCoef) <- norm.methods
+pcs.pam.silCoef <- as.data.frame(pam50.silCoef) %>%
+  tidyr::pivot_longer(everything(), names_to = 'silCoef.pam50', values_to = 'silCoef') %>%
+  dplyr::mutate(datasets = c(
+    'FPKM',
+    'Quantile',
+    'UQ',
+    'RUV-III')) %>%
+  dplyr::mutate(datasets = factor(
+    datasets,
+    levels = c(
+      'FPKM',
+      'Quantile',
+      'UQ',
+      'RUV-III'))) %>% 
+  data.frame(.)
+
+p1.pam50 <- ggplot(pcs.pam.silCoef, aes(x = datasets, y = silCoef)) +
+  geom_col() +
+  ylab('Silhouette coefficient') +
+  xlab('') +
+  gg.theme
+
+### ARI
+library(mclust)
+set.seed(2010211148)
+pam50.ari <- sapply(
+  norm.methods,
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u[,1:2]
+    BIC <- mclust::mclustBIC(data = pcs)
+    mod <- mclust::Mclust(data = pcs, x = BIC, G = 5)
+    mclust::adjustedRandIndex(
+      mod$classification, 
+      sample.info$pam50
+      )
+    })
+names(pam50.ari) <- norm.methods
+pam50.ari <- as.data.frame(pam50.ari) %>%
+  tidyr::pivot_longer(everything(), names_to = 'silCoef.pam50', values_to = 'silCoef') %>%
+  dplyr::mutate(datasets = c(
+    'FPKM',
+    'Quantile',
+    'UQ',
+    'RUV-III')) %>%
+  dplyr::mutate(datasets = factor(
+    datasets,
+    levels = c(
+      'FPKM',
+      'Quantile',
+      'UQ',
+      'RUV-III'))) %>% 
+  data.frame(.)
+
+p2.pam50 <- ggplot(pam50.ari, aes(x = datasets, y = silCoef)) +
+  geom_col() +
+  ylab('ARI') +
+  xlab('') +
+  gg.theme
+
+tiff(paste0(
+  brca.fig.path,
+  'RUV-III-PRPS_MultipleStudies_BRCA_Pam50_SilAri.tiff'),
+  width = 1600,
+  height = 1200,
+  res = 400
+  )
+gridExtra::grid.arrange(
+  p1.pam50, 
+  p2.pam50, 
+  ncol = 2)
+dev.off()
+```
+
+
+### PCA plots
+
+```{r}
+lapply(
+  norm.methods,
+  function(x){
+    tiff(paste0(
+      brca.fig.path,
+      'RUV-III-PRPS_MultipleStudies_BRCA_Pam50-PcaPlots_',
+      x,
+      '.tiff'),
+      width = 6000,
+      height = 1400,
+      res = 400
+      )
+    pcs <- pca.all[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'PAM50',
+      group = sample.info$pam50,
+      color = pam50.colors,
+      strokeSize = .2,
+      pointSize = 1.3,
+      strokeColor = 'gray30',
+      alpha = .6)
+    do.call(
+      gridExtra::grid.arrange,
+      c(p,
+        ncol = 4)
+      )
+    dev.off()
+  })
+```
+
+
+
+
+## Batch effects
+### Vector correlations
+```{r}
+batch.dv <- fastDummies::dummy_cols(sample.info$study)
+batch.dv <- batch.dv[ , c(2:ncol(batch.dv))]
+batch.cca <- lapply(
+  norm.methods, 
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u
+  sapply(
+    1:10,
+    function(y){
+      cca.time <- stats::cancor(
+        x = pcs[, 1:y, drop = FALSE],
+        y = batch.dv)
+      1 - prod(1 - cca.time$cor^2)
+    })
+  })
+names(batch.cca) <- norm.methods
+batch.cca <- as.data.frame(batch.cca) %>%
+  dplyr::rename(
+    FPKM = FPKM,
+    Quantile = Quantile,
+    UQ = UQ,
+    'RUV-III' = RUV_III
+  ) %>%
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'vec.corr') %>%
+  dplyr::mutate(
+    datasets = factor(
+      datasets,
+      levels = c(
+        'FPKM',
+        'Quantile',
+        'UQ',
+        'RUV-III'))
+    ) %>%
+  data.frame(.)
+# Plot
+tiff(paste0(
+  brca.fig.path,
+  'RUV-III-PRPS_MultipleStudies_BRCA_Batches_Cca'),
+  width = 2400,
+  height = 1400,
+  res = 400
+  )
+ggplot(batch.cca, aes(x = pcs, y = vec.corr, group = datasets)) +
+  geom_line(aes(color = datasets), size = 1) +
+  geom_point(aes(color = datasets), size = 3) +
+  xlab('PCs') +
+  ylab (expression("Vector correlation")) +
+  scale_color_manual(
+    values=c(dataSets.colors),
+    labels = c('FPKM', 'Quantile','UQ', 'RUV-III'),
+    name = 'Datastes') +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.x = element_text(size = 12, angle = 45, vjust = 1, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+dev.off()
+```
+
+###Silhouette coefficient  ann ARI index analyses
+
+```{r}
+batch.silCoef <-  sapply(
+  norm.methods, 
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.all[[x]]$sing.val$u, 
+      variable  = sample.info$study, 
+      nPCs = 4
+      )
+    })
+names(batch.silCoef) <- norm.methods
+
+batch.silCoef <- as.data.frame(batch.silCoef) %>%
+  tidyr::pivot_longer(
+    everything(), 
+    names_to = 'silCoef.pam50', 
+    values_to = 'silCoef') %>%
+  dplyr::mutate(datasets = c(
+    'FPKM',
+    'Quantile',
+    'UQ',
+    'RUV-III')) %>%
+  dplyr::mutate(datasets = factor(
+    datasets,
+    levels = c(
+      'FPKM',
+      'Quantile',
+      'UQ',
+      'RUV-III'))) %>% 
+  data.frame(.)
+
+p1.batch <- ggplot(batch.silCoef, aes(x = datasets, y = silCoef)) +
+  geom_col() +
+  ylab('Silhouette coefficient') +
+  xlab('') +
+  gg.theme
+
+### ARI
+set.seed(201021948)
+batch.ari <- sapply(
+  norm.methods,
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u[,1:4]
+    BIC <- mclust::mclustBIC(data = pcs)
+    mod <- mclust::Mclust(data = pcs, x = BIC)
+    mclust::adjustedRandIndex(
+      mod$classification, 
+      sample.info$study
+      )
+    })
+names(batch.ari) <- norm.methods
+
+batch.ari <- as.data.frame(batch.ari) %>%
+  tidyr::pivot_longer(
+    everything(), 
+    names_to = 'silCoef.pam50', 
+    values_to = 'silCoef') %>%
+  dplyr::mutate(datasets = c(
+    'FPKM',
+    'Quantile',
+    'UQ',
+    'RUV-III')) %>%
+  dplyr::mutate(datasets = factor(
+    datasets,
+    levels = c(
+      'FPKM',
+      'Quantile',
+      'UQ',
+      'RUV-III'))) %>% 
+  data.frame(.)
+
+p2.batch <- ggplot(batch.ari, aes(x = datasets, y = silCoef)) +
+  geom_col() +
+  ylab('ARI') +
+  xlab('') +
+  gg.theme
+tiff(paste0(
+  brca.fig.path,
+  'RUV-III-PRPS_MultipleStudies_BRCA_Batch_SilAri.tiff'),
+  width = 1600,
+  height = 1200,
+  res = 400
+  )
+gridExtra::grid.arrange(
+  p1.batch, 
+  p2.batch, 
+  ncol = 2)
+dev.off()
+```
+
+### PCA plots
+
+```{r}
+lapply(
+  norm.methods,
+  function(x){
+    tiff(paste0(
+      brca.fig.path,
+      'RUV-III-PRPS_MultipleStudies_BRCA_Studies-PcaPlots_',
+      x,
+      '.tiff'),
+      width = 6000,
+      height = 1400,
+      res = 400
+      )
+    pcs <- pca.all[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'Studies',
+      group = sample.info$study,
+      color = studies.colors,
+      strokeSize = .2,
+      pointSize = 1.3,
+      strokeColor = 'gray30',
+      alpha = .6)
+    do.call(
+      gridExtra::grid.arrange,
+      c(p,
+        ncol = 4)
+      )
+    dev.off()
+  })
+```
+
+
+```{r}
+batch.colors <- RColorBrewer::brewer.pal(n = 8, 'Dark2')[1:3]
+pca.studies <- lapply(
+  c('GSE96058', 'GSE81538'), 
+  function(x){
+    index <- sample.info$study == x
+    pcs <- .pca.fast(data = all.dataset[ncg, index], nPcs = 3, is.log = TRUE)
+     tiff(paste0(
+      brca.fig.path,
+      'RUV-III-PRPS_MultipleStudies_BRCA_Studies-PcaPlots_',
+      x,
+      '.tiff'),
+      width = 6000,
+      height = 1400,
+      res = 400
+      )
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[, 1:3],
+      pc.var = pcs$var,
+      group.name = 'Studies',
+      group = sample.info$batch[index],
+      color = batch.colors,
+      strokeSize = .2,
+      pointSize = 1.9,
+      strokeColor = 'gray30',
+      alpha = .6
+    )
+    do.call(gridExtra::grid.arrange,
+            c(p,
+              ncol = 4))
+    dev.off()
+  
+    })
+```
+
+
+
+## RLE plot
+
+```{r}
+sample.info$study <- factor(sample.info$study, levels = names(studies.colors))
+lapply(
+  norm.methods, 
+  function(x){
+      tiff(paste0(
+        brca.fig.path,
+        'RUV-III-PRPS_MultipleStudies_BRCA_Studies-RLE_',
+        x,
+        '.tiff'),
+        width = 4500,
+        height = 1600,
+        res = 400
+      )
+    rle <- rle.all[[x]]
+    .plot.rle(
+      rle.data = rle$rle,
+      variable = sample.info$study,
+      rle.med = rle$rle.med,
+      zero.line.color = 'cyan',
+      rle.med.color = studies.colors,
+      show.tech.rep = FALSE,
+      rle.med.point.size = .4,
+      rle.med.point.lwd = .01,
+      curve.lty = 1,
+      curve.lwd = 1,
+      plot.lwd = 2,
+      cex.axis = 1, 
+      curve.color = 'grey',
+      ylim = c(-1.5, 1.5),
+      cex.x = 1,
+      cex.y = 1)
+    dev.off()
+  })
+```
+
+## Biology
+```{r}
+genes <- c(
+  'CENPE', 
+  'AURKB', 
+  'PLK1',  
+  'PLK4' ,
+  'CCNB1')
+data <- t(ruv.iii.prps.norm[ genes, ]) %>% 
+  data.frame() %>% 
+  dplyr::mutate(batch = sample.info$study) %>% 
+  tidyr::pivot_longer(
+    -c(CCNB1,batch) , 
+    names_to = 'genes',
+    values_to = 'expr') %>% 
+  data.frame()
+
+tiff(paste0(
+  brca.fig.path,
+  'RUV-III-PRPS_MultipleStudies_BRCA_BioCorre.tiff'),
+  width = 3000,
+  height = 3000,
+  res = 400
+  )
+ggplot(data, aes(x = CCNB1, y = expr, color = batch)) +
+  geom_point() +
+  facet_wrap( ~ genes, scale = 'free') +
+  ylab('Gene expression') +
+     geom_smooth(method = 'lm') +
+     ggpubr::stat_cor(
+          aes(label = ..r.label..),
+          label.x.npc = .07,
+          label.y.npc = .83,
+          hjust = 0,
+          size = 8,
+          r.accuracy = 0.1,
+          col = 'black',
+          cor.coef.name = "rho"
+        ) +
+  scale_color_manual(values = studies.colors, name = 'Studies') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 16)
+  )
+dev.off()
+
+genes.list <- list(
+  pair1 = c('CNOT1', 'E2F4'),
+  pair2 = c('ESRRA', 'MAP3K2')
+  )
+
+for(i in 1:2){
+  data <- t(ruv.iii.prps.norm[ genes.list[[i]], ]) %>% 
+  data.frame() %>% 
+    dplyr::mutate(batch = sample.info$study) %>%
+    data.frame()
+  tiff(
+    paste0(
+      brca.fig.path,
+      'RUV-III-PRPS_MultipleStudies_BRCA_BioCorre_', 'Pair', i, 'tiff'
+    ),
+    width = 2000,
+    height = 2000,
+    res = 400
+  )
+  p <- ggplot(data, aes(x = data[,1], y = data[,2], color = batch)) +
+    geom_point() +
+    xlab(genes.list[[i]][1]) +
+    ylab(genes.list[[i]][2]) +
+    geom_smooth(method = 'lm') +
+     ggpubr::stat_cor(
+          aes(label = ..r.label..),
+          label.x.npc = .07,
+          label.y.npc = .83,
+          hjust = 0,
+          size = 8,
+          r.accuracy = 0.1,
+          col = 'black',
+          cor.coef.name = "rho"
+        ) +
+    scale_color_manual(values = studies.colors, name = 'Studies') +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1),
+      axis.title.x = element_text(size = 18),
+      axis.title.y = element_text(size = 18),
+      axis.text.x = element_text(size = 12),
+      axis.text.y = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      legend.title = element_text(size = 14),
+      strip.text.x = element_text(size = 16)
+    )
+  print(p)
+  dev.off()
+}
+```
+
+
+

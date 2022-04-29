@@ -1,0 +1,1711 @@
+---
+title: "Downloading_DataPreparation"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "04-06-2019"
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 5
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r knitr_init, echo=FALSE, results="asis"}
+library(knitr)
+library(rmdformats)
+library(DT)
+library(BiocStyle)
+options(max.print = "75")
+opts_chunk$set(
+  echo = FALSE,
+  prompt = FALSE,
+  comment = FALSE,
+  message = FALSE,
+  warning = FALSE)
+opts_knit$set(width = 65)
+```
+
+# Downloading TCGA RNAseq data - Harmonized
+There are 33 TCGA cancer types in the TCGAbiolinks R package.## Harmonized data has 3 different forms of RNAseq data as follow: raw counts, FPKM and FPKM.UQ.
+```{r}
+### Set up directory
+dataPath <- '../Data/'
+#dir.create(path = paste0('../Data/', 'TCGA_AllCancer_Harmonized'))
+HarmonizedData_Path <- paste0(
+  dataPath, "TCGA_AllCancer_Harmonized/"
+  )
+### Selecting TCGA cancer types
+all.projects <- TCGAbiolinks::getGDCprojects() # 64 10
+tcga.cancer.types <- grep(
+  pattern = 'TCGA',
+  x = all.projects$project_id,
+  value = TRUE
+  )
+length(tcga.cancer.types) # 33
+
+## Harmonized data has 3 different levels of RNAseq data as follow
+data.types  <- c(
+  'HTSeq - Counts',
+  'HTSeq - FPKM',
+  'HTSeq - FPKM-UQ'
+  )
+data.names  <- c(
+  'HTSeq-Counts',
+  'HTSeq-FPKM',
+  'HTSeq-FPKM-UQ'
+  )
+data.to.download <- paste(
+  tcga.cancer.types,
+  data.types,
+  sep = '_'
+  )
+saveRDS(
+  object = data.to.download,
+  file = paste0(
+    dataPath,
+    'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds')
+  )
+# Downloading the data
+req.package <- c(
+  'TCGAbiolinks',
+  'HDF5Array',
+  'SummarizedExperiment'
+  )
+ncores <- detectCores::detectCores()-1
+cl <- parallel::makeCluster(ncores)
+registerDoParallel(cl)
+foreach::foreach(i = 1:length(tcga.cancer.types), .packages = req.package) %dopar% {
+  for (j in 1:3) {
+    if (!paste0(har.data.path, tcga.cancer.types[i], '_', data.names[j]) %in% list.files(har.data.path)) {
+      harmonized.data <- TCGAbiolinks::DCquery(
+        project = tcga.cancer.types[i],
+        data.category = 'Transcriptome Profiling',
+        data.type = 'Gene Expression Quantification',
+        workflow.type = data.types[j],
+        legacy = FALSE
+      )
+      TCGAbiolinks::GDCdownload(harmonized.data)
+      exp.df <- TCGAbiolinks::GDCprepare(query = harmonized.data)
+      HDF5Array::saveHDF5SummarizedExperiment(
+        x = exp.df,
+        dir = paste0(
+          har.data.path,
+          tcga.cancer.types[i],
+          '_',
+          data.names[j]),
+        replace = TRUE
+      )
+    }
+    else{
+      print(paste(paste0(
+        tcga.cancer.types[i], 
+        '_' , 
+        data.names[j]), 
+        'data type exists'))
+    }
+  }
+}
+stopCluster(cl)
+### check files
+length(list.files(paste0(dataPath, 'TCGA_AllCancer_Harmonized/'))) # 99 files
+```
+
+Creating a file that contains all harmonized data information
+
+```{r }
+list.dataSets <- as.data.frame(
+  expand.grid(
+    tcga.cancer.types,
+    data.names)
+  )
+dim(list.dataSets) # 99  2
+colnames(list.dataSets) <- c('Cancer', 'Types')
+list.dataSets$files <- paste(
+  list.dataSets$Cancer,
+  list.dataSets$Types,
+  sep = '_'
+  )
+n.samples <- lapply(
+  list.dataSets$files ,
+  function(x){
+  temp <- HDF5Array::loadHDF5SummarizedExperiment(
+    dir = paste0(HarmonizedData_Path, '/', x))
+  return(ncol(SummarizedExperiment::assay(temp)))
+  })
+list.dataSets$n.samples <- as.numeric(n.samples)
+
+colnames(list.dataSets)[1:2] <- c(
+  'cancer.type', 
+  'data.types'
+  )
+sum(list.dataSets$n.samples/3) # 11093 samples: normal and cancer samples\
+saveRDS(
+  object = list.dataSets,
+  file = paste0(
+    dataPath,
+    'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds'))
+```
+
+# Meta_sample annotation
+We obtain sample annotation and clinical information from various sources below:
+```{r meta-sampleInformation }
+list.dataSets <- readRDS(
+  paste0(
+    dataPath,
+    'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds')
+  )
+list.dataSets <- tidyr::spread(
+  data = list.dataSets,
+  key = data.types,
+  value = files
+  )
+list.dataSets$cancer <- gsub(
+  pattern = 'TCGA-',
+  '',
+  x = list.dataSets$cancer.type
+  )
+```
+
+## Batch information - MDA
+Adding batch information from the TCGA batch effects website: https://bioinformatics.mdanderson.org/public-software/tcga-batch-effects/
+```{r batchInfo-MDA }
+### Set up path to access to batch details
+path.bacth.info <- paste0(
+  dataPath,
+  'TCGA_RNAseq_BatchInformation_MDA')
+list.files(path = path.bacth.info) # 33 files
+
+mda.bacth.info <- data.frame(
+  batch.files  = as.character(list.files(path = path.bacth.info))
+  )
+mda.bacth.info$cancer <- sapply(
+  X = mda.bacth.info$batch.files,
+  function(y){
+    unlist(strsplit(x = y, split = '[_]'))[2]
+    }
+  )
+```
+
+## Tumour purity - Aran
+Adding tumor different purity estimates from the Aran et.al, Nature Communications: https://www.nature.com/articles/ncomms9971
+```{r tumur-purity }
+path.tumour.purity <- paste0(
+  dataPath, 
+  'TCGA_AllCancer_TumorPurity_NCom/'
+  )
+list.files(path.tumour.purity) # 4 files
+tumour.purity.aran <- read.delim(
+  paste0(
+    path.tumour.purity,
+    'tcga.pan.cancer.purity.cpe.txt')
+  )# 9364  8
+dim(tumour.purity.aran) # # 9364  8
+tumour.purity.aran <- tumour.purity.aran[,-8]
+colnames(tumour.purity.aran) <- paste(
+  colnames(tumour.purity.aran),
+  'Aran',
+  sep = '_'
+  )
+```
+
+## Survival information - Liu
+Add several curated clinical annotation from Jianfang Liu et.al DOI:https://doi.org/10.1016/j.cell.2018.02.052
+```{r clinic-markers}
+path.clinical.annotation <- paste0(
+  dataPath,
+  'TCGA_AllCancer_ClinicalAnnotations_Cell/'
+  )
+list.files(path.clinical.annotation) # 1
+clinical.annotation.liu <- read.excel.allsheets(
+  paste0(
+    path.clinical.annotation,
+    'mmc1.xlsx')
+  )
+clinical.liu <- clinical.annotation.liu$`TCGA-CDR` # 11160    34
+colnames(clinical.liu) <- paste(
+  colnames(clinical.liu),
+  'liu',
+  sep = '_'
+  )
+
+clinical.extra.liu <- clinical.annotation.liu$ExtraEndpoints
+colnames(clinical.extra.liu) <- paste(
+  colnames(clinical.extra.liu),
+  'liu.extra',
+  sep = '_'
+  )
+
+### Merge the two clinical data from liu et.al.
+full.clinical.liu <- merge(
+  x = clinical.liu,
+  y = clinical.extra.liu,
+  by.x = 'bcr_patient_barcode_liu',
+  by.y = 'bcr_patient_barcode_liu.extra',
+  all = TRUE
+  ) 
+dim(full.clinical.liu)# 11160    52
+
+```
+
+## Ploidy - PanCancer
+Obtain this from: https://gdc.cancer.gov/about-data/publications/pancanatlas.
+
+```{r}
+pan.cancer.ploidy <- read.delim(paste0(
+  dataPath, 
+  'TCGA_AllCancer_PanCanSampleAnnotations/TCGA_mastercalls.abs_tables_JSedit.fixed.txt')
+  )
+dim(pan.cancer.ploidy) # 10786  10
+pan.cancer.ploidy$sample.id <- substr(
+  pan.cancer.ploidy$sample,
+  start = 1,
+  stop = 16
+  )
+colnames(pan.cancer.ploidy) <- paste0(colnames(pan.cancer.ploidy), '_PanCan')
+```
+
+## Sample quality - PanCacer
+I obtain this from https://gdc.cancer.gov/about-data/publications/pancanatlas.
+
+```{r}
+sample.quality <- read.delim(paste0(
+  dataPath, 
+  'TCGA_AllCancer_PanCanSampleAnnotations/merged_sample_quality_annotations.tsv')
+  ) 
+dim(sample.quality) # 79286  12
+```
+
+## Sample annotations - TCGA firehose 
+TCGA clinical annotation from: https://gdac.broadinstitute.org
+```{r}
+path <-  paste0(
+    dataPath,
+    'TCGA_AllCancer_FClinicalAnnotations_TcgaFirehose/'
+    )
+files <- list.files(path, pattern = 'tar')
+mclapply(
+  files,
+  function(x){
+    cancer <- gsub('.Merge', '', strsplit(x, '_')[[1]][2])
+    untar(tarfile = paste0(path, x), exdir = path)
+    new.file <- gsub('.tar', '', x)
+    df <- read.delim(
+      paste0(
+        path,
+        new.file,
+        '/',
+        cancer,
+        '.clin.merged.txt'),
+      header = FALSE,
+      row.names = 1,
+      stringsAsFactors = FALSE
+      )
+    df <- as.data.frame(t(df))
+    write.table(
+      df,
+      paste0(
+        path,
+        'TCGA-FireHose-ClinicalBiospData_',
+        cancer,
+        '.txt'
+        ),
+      row.names = TRUE,
+      sep = '\t')
+  },
+  mc.cores = 10
+)
+```
+
+## Putting it all togather
+making a file containing all files
+```{r }
+### Adding batch information from MDA
+all.files <- list(
+  list.dataSets,
+  mda.bacth.info
+  ) %>%
+  purrr::reduce(
+    full_join,
+    by = 'cancer')
+### TCGA cancer types that have any purity estimates
+all.files$cpe <- 'NO'
+all.files$cpe[all.files$cancer %in% unique(tumour.purity.aran$Cancer.type_Aran)] <- 'YES'
+table(all.files$cpe)
+# NO YES 
+# 12  21 
+
+### Putting all samples
+# dir.create(paste0(dataPath, 'TCGA_AllCancer_MetaClinicalInformation'))
+path.clinical.annotation.allCancer <- paste0(
+  dataPath, 
+  'TCGA_AllCancer_MetaClinicalInformation'
+  )
+clinical.file.name <- vector()
+for(i in 1:nrow(all.files)){
+  #batch information from MDA
+  batch.info.mda <- tidy.bacth.info.mda(
+    path = paste0(path.bacth.info, '/'),
+    df = all.files$batch.files[i]
+  )
+  colnames(batch.info.mda)[2:ncol(batch.info.mda)] <- paste(
+    colnames(batch.info.mda)[2:17],
+    'mda',
+    sep = '_'
+  )
+  # barcode from harmonized RNA-Seq data
+  sumarize.exp <- HDF5Array::loadHDF5SummarizedExperiment(
+    dir = paste0(
+      HarmonizedData_Path,
+      all.files$`HTSeq-Counts`[i])
+    )
+  tcga.barcdoe <- decode.tcga.barcode(
+    code = colnames(sumarize.exp),
+    sep = '[-]'
+    )
+  tcga.barcdoe$Sample <- row.names(tcga.barcdoe)
+  colnames(tcga.barcdoe)[1:7] <- paste0(
+    colnames(tcga.barcdoe)[1:7],
+    '_RNAseq'
+  )
+  # samples annotation from harmonized data
+  sample.info.rnaSeq <- as.data.frame(sumarize.exp@colData)
+  colnames(sample.info.rnaSeq) <- paste(
+    colnames(sample.info.rnaSeq),
+    '_RNAseq',
+    sep = '_'
+  )
+  sample.info.rnaSeq$Sample <- row.names(sample.info.rnaSeq)
+  ### First match
+  meta.info <- list(
+     batch.info.mda,
+     tcga.barcdoe,
+     sample.info.rnaSeq
+     ) %>%
+     purrr::reduce(
+       full_join,
+       by = 'Sample'
+       )
+  # purity details
+  tumour.purity <- tumour.purity.aran[
+    tumour.purity.aran$Cancer.type == all.files$cancer[i] , ]
+  meta.info <- merge(
+    x = meta.info,
+    y = tumour.purity,
+    by.x = 'sample.id.c_mda',
+    by.y = 'Sample.ID_Aran',
+    all = TRUE
+  )
+  # Adding more clinical details
+  clin.info.liu <- full.clinical.liu[
+    full.clinical.liu$type_liu == all.files$cancer[i] , ]
+    meta.info <- merge(
+    x = meta.info,
+    y = clin.info.liu,
+    by.x = 'sample.id.a_mda',
+    by.y = 'bcr_patient_barcode_liu',
+    all = TRUE
+    )
+    # Sample quality
+    quality <- sample.quality[sample.quality$cancer.type == all.files$cancer[i]  , ]
+    uni.sample <- intersect(meta.info$Sample, quality$aliquot_barcode)
+    quality <- quality[quality$aliquot_barcode %in% uni.sample, ]
+    colnames(quality) <- paste0(colnames(quality), '_PanCanQuality')
+    meta.info <- merge(
+      meta.info,
+      quality,
+      by.x = 'Sample',
+      by.y = 'aliquot_barcode_PanCanQuality',
+      all = TRUE
+    )
+    # ploidy details
+    uni.sample <- intersect(meta.info$sample.id.b_mda, pan.cancer.ploidy$array)
+    ploidy.temp <- pan.cancer.ploidy[pan.cancer.ploidy$array %in% uni.sample , ]
+    meta.info <- merge(
+      meta.info,
+      ploidy.temp,
+      by.x = 'sample.id.b_mda',
+      by.y = 'array_PanCan',
+      all = TRUE
+    )
+    ### TCGA Xena details
+    path.xena <- paste0(dataPath, 'TCGA_AllCancer_ClinicalAnnotations_Xena/')
+    xena <- read.delim(paste0(path.xena, all.files$cancer[i], '_clinicalMatrix'))
+    colnames(xena) <- paste0(colnames(xena), '_Xena')
+    meta.info <- merge(
+      meta.info,
+      xena,
+      by.x = 'sample.id.b_mda',
+      by.y = 'sampleID_Xena',
+      all = TRUE
+    )
+    meta.info <- meta.info[!duplicated(meta.info$Sample), ]
+    meta.info <- meta.info[!is.na(meta.info$Sample), ]
+    ### TCGA fire hose details
+    path.firehose <-  paste0(
+      dataPath,
+      'TCGA_AllCancer_FClinicalAnnotations_TcgaFirehose/')
+    tcga.firehose <- read.delim(paste0(
+      path.firehose,
+      'TCGA-FireHose-ClinicalBiospData_',
+      all.files$cancer[i],
+      '.txt' )
+      )
+    tcga.firehose.subset <- tcga.firehose[ , grep('bcr_aliquot_barcode',
+                                                  colnames(tcga.firehose),
+                                                  value = TRUE)]
+    samples <- tolower(meta.info$Sample)
+    index <- parallel::mclapply(samples, function(x) {
+      col <- grep(x, tcga.firehose.subset)
+      grep(x , tcga.firehose.subset[, col])
+    }, mc.cores = 10)
+    names(index) <- samples
+    index <- as.data.frame(unlist(index))
+    colnames(index) <- 'samples'
+    tcga.firehose <- tcga.firehose[index$samples , ]
+    row.names(tcga.firehose) <- row.names(index)
+    tcga.firehose$Sample <- toupper(row.names(index))
+    meta.info <- merge(
+      meta.info,
+      tcga.firehose,
+      by.x = 'Sample',
+      by.y = 'Sample',
+      all = TRUE
+    )
+    meta.info <- meta.info[!duplicated(meta.info$Sample), ]
+    meta.info <- meta.info[!is.na(meta.info$Sample), ]
+
+    saveRDS(
+      object = meta.info,
+      file = paste0(
+        path.clinical.annotation.allCancer, '/',
+        'TCGA_MetaClinicalInformation_',
+        all.files$cancer[i],
+        '.rds'
+      )
+    )
+    clinical.file.name <- c(
+      clinical.file.name,
+      paste0(
+        'TCGA_MetaClinicalInformation_',
+        all.files$cancer[i],
+        '.rds'))
+}
+all.files$clinical.data <- clinical.file.name
+saveRDS(
+  object = all.files,
+  paste0(
+    dataPath,
+    'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds'
+    ))
+```
+
+# Gene annotation
+## Downloading a gtf file for hg38.v22
+```{r}
+gene.annot.path <- paste0(
+  dataPath, 
+  'HumanGenes_GeneCodeV22/')
+
+gencode.file <- 'gencode.v22.annotation.gtf.gz'
+gencode.link <- paste(
+  'ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_22',
+  gencode.file,
+  sep = '/'
+  )
+download.file(
+  url = gencode.link,
+  destfile = paste0(
+    gene.annot.path,
+    gencode.file),
+  method = 'libcurl'
+  ) #  39MB
+```
+
+## Processing the gtf file
+
+```{r }
+## Reading the gtf file
+gencode.file <- 'gencode.v22.annotation.gtf.gz'
+gtf <- import.gff(
+  paste0(
+    gene.annot.path,
+    gencode.file),
+  format = 'gtf',
+  genome = 'GRCm38.71',
+  feature.type = 'exon'
+  )
+# GRanges object with 1172082 ranges and 22 metadata columns
+
+#### DNA sequence for all exons of gtf _ hg38 ############################
+hg38.exon.seq <- getSeq(
+  x = BSgenome.Hsapiens.UCSC.hg38,
+  GRanges(gtf@seqnames, gtf@ranges)
+  )
+# A DNAStringSet instance of length 1172082
+
+## Calculate gc content
+hg38.gc <- letterFrequency(
+  x = hg38.exon.seq,
+  letter = 'GC',
+  as.prob = TRUE
+  )
+gtf$gc <- as.numeric(
+  round(hg38.gc, 2)
+  )
+```
+
+## Calculating GC content
+```{r gc-content}
+#### Calculating gc content for each gene
+gtf <- gtf[, c(
+    'source',
+    'gene_id',
+    'gene_type',
+    'gene_status',
+    'gene_name',
+    'protein_id',
+    'exon_number',
+    'transcript_type',
+    'gc')
+    ]
+gtf.df <- data.frame(gtf)
+gtf.df <- droplevels(gtf.df)
+factor.colums <- sapply(gtf.df, is.factor)
+gtf.df[factor.colums] <- lapply(
+  gtf.df[factor.colums],
+  as.character
+  )
+
+gtf.df <- gtf.df %>%
+  group_by(gene_id) %>%
+  mutate(
+    seqnames. = paste(unique(seqnames), collapse = '//'),
+    start. = min(start),
+    end. = max(end),
+    strand. = paste(unique(strand), collapse = '//'),
+    no.transcript. = length(seqnames),
+    gc. = sum(gc) / length(gc),
+    gene_name. = unique(gene_name),
+    gene_type. = unique(gene_type),
+    transcript_type = paste(unique(transcript_type), collapse = '//'),
+    length. = sum(width),
+    exon_number. = sum(as.numeric(exon_number))
+  ) %>%
+  data.frame() %>%
+  filter(!duplicated(gene_id))
+gtf.df <- gtf.df[, c(7,15:24)]
+gtf.df$gene_id.v <- gsub(
+  '\\.[0-9]*',
+  '',
+  x = gtf.df$gene_id
+)
+```
+
+## Different groups of gene types
+```{r }
+## https://www.gencodegenes.org/pages/biotypes.html
+gene.bio <- names(table(gtf.df$gene_type.))
+## all pseudogenes
+pseudogene <- grep(
+  'pseudogene',
+  gene.bio,
+  value = TRUE
+  )
+gtf.df$pseudogene <- 'no'
+gtf.df$pseudogene[
+  gtf.df$gene_type. %in% pseudogene
+  ] <- 'yes'
+
+gene.bio.1 <- gene.bio[
+  !gene.bio %in% pseudogene
+  ]
+
+## Immunoglobulin (Ig) variable chain
+ig.genes <- grep(
+  'IG',
+  gene.bio.1,
+  value = TRUE
+  )
+gtf.df$ig.genes <- 'no'
+gtf.df$ig.genes[
+  gtf.df$gene_type. %in% ig.genes
+  ] <- 'yes'
+
+## T-cell receptor (TcR) genes
+tcr.gene <- grep(
+  'TR',
+  gene.bio.1,
+  value = TRUE
+  )
+gtf.df$tcr.gene <- 'no'
+gtf.df$tcr.gene[
+  gtf.df$gene_type. %in% tcr.gene
+  ] <- 'yes'
+
+
+## Non-coding RNA predicted using sequences from Rfam and miRBase
+non.coding.rna <- grep(
+  'RNA',
+  gene.bio.1,
+  value = TRUE
+  )[-c(1:2,10)]
+
+gtf.df$non.coding.rna <- 'no'
+gtf.df$non.coding.rna[
+  gtf.df$gene_type. %in% non.coding.rna
+  ] <- 'yes'
+
+
+## Generic long non-coding RNA
+lnc.ran <- grep(
+  'RNA|ncrna|sense',
+  gene.bio.1,
+  value = TRUE
+  )[c(1:4,11,12)]
+
+gtf.df$lnc.ran <- 'no'
+gtf.df$lnc.ran[
+  gtf.df$gene_type. %in% lnc.ran
+  ] <- 'yes'
+
+## protein coding
+protein.coding <- grep(
+  'protein_coding',
+  gene.bio.1,
+  value = TRUE
+  )
+
+gtf.df$protein.coding <- 'no'
+gtf.df$protein.coding[
+  gtf.df$gene_type. %in% protein.coding
+  ] <- 'yes'
+
+
+### shorten names of gene types
+log.names <- c(
+  'pseudogene',
+  'processed',
+  'overlapping',
+  'transcribed',
+  'translated',
+  'polymorphic',
+  '3prime',
+  'unitary',
+  '_'
+  )
+
+short.names <- c(
+  'pseudo',
+  'pro',
+  'Ovlap',
+  'TraCr',
+  'TraLa',
+  'PolMor',
+  '3p',
+  'uni',
+  '.'
+  )
+for(i in 1:length(log.names)){
+  gtf.df$gene_type. <-
+    gsub(
+    log.names[i],
+    short.names[i],
+    gtf.df$gene_type.
+    )
+  }
+
+```
+
+## Several sets of housekeeping genes
+```{r housekeeping-genes}
+## Adding housekeeping genes ###########################################
+library(scMerge)
+data('segList_ensemblGeneID', package = 'scMerge')
+
+# single cell housekeeping genes
+gtf.df$sc.hk <- 'no'
+gtf.df$sc.hk[
+  gtf.df$gene_id.v
+  %in% segList_ensemblGeneID$human$human_scSEG
+  ] <- 'yes'
+# bulk rnaseq housekeeping genes
+gtf.df$rnaseq.hk <- 'no'
+gtf.df$rnaseq.hk[
+  gtf.df$gene_id.v
+  %in% segList_ensemblGeneID$human$bulkRNAseqHK
+  ] <- 'yes'
+# microarray housekeeping genes
+gtf.df$array.hk <- 'no'
+gtf.df$array.hk[
+  gtf.df$gene_id.v
+  %in% segList_ensemblGeneID$human$bulkMicroarrayHK
+  ] <- 'yes'
+# intersect of the three housekeeping genes
+common <- Reduce(
+  intersect,
+  list(
+    segList_ensemblGeneID$human$human_scSEG,
+    segList_ensemblGeneID$human$bulkMicroarrayHK,
+    segList_ensemblGeneID$human$bulkRNAseqHK
+    )
+  )
+
+gtf.df$common.hk <- 'no'
+gtf.df$common.hk[
+  gtf.df$gene_id.v
+  %in% common
+  ] <- 'yes'
+
+
+## Nanostring housekeeping genes - PanCancer
+nanostring <- read.delim(
+  'Housekeeping_genes/Nanostring.housekeeping_50.tsv',
+  stringsAsFactors = FALSE,
+  header = FALSE
+)
+
+gtf.df$nanostring.hk <- 'no'
+gtf.df$nanostring.hk[
+  gtf.df$gene_name.
+  %in% nanostring$V1
+  ] <- 'yes'
+
+## Revisited housekeeping genes - PanCancer
+revisited.hk <- read.delim(
+  'Housekeeping_genes/HouseKeepingGenes_RevisitedPaper.txt',
+  stringsAsFactors = FALSE,
+  header = TRUE
+  )
+revisited.hk$GeneNames <- gsub(
+  ' ',
+  '',
+  revisited.hk$GeneNames
+  )
+
+gtf.df$revisited.hk <- 'no'
+gtf.df$revisited.hk[
+  gtf.df$gene_name.
+  %in% revisited.hk$GeneNames
+  ] <- 'yes'
+
+```
+
+## Adding stromal and immune gene signatures
+Add stromal and immune gene signatures from Yoshihara et.al :https://www.nature.com/articles/ncomms3612
+```{r }
+stromal.imuune <- read.delim(
+  'Various_Gene_Signatures/stromal.immune.genesig.nat.comms.txt',
+  stringsAsFactors = FALSE
+  )
+# convert to new names
+stromal.imuune$Gene[stromal.imuune$Gene == 'TXNDC3'] <- 'NME8'
+stromal.imuune$Gene[stromal.imuune$Gene == 'ODZ4'] <- 'TENM4'
+
+stromal <- stromal.imuune$Gene[
+  stromal.imuune$Set == 'Stromal141_UP'
+  ]
+immune <- stromal.imuune$Gene[
+  stromal.imuune$Set == 'Immune141_UP'
+  ]
+
+gtf.df$stromal <- 'no'
+gtf.df$stromal[
+  gtf.df$gene_name.
+  %in% stromal
+  ] <- 'yes'
+
+gtf.df$immnue <- 'no'
+gtf.df$immnue[
+  gtf.df$gene_name.
+  %in% immune
+  ] <- 'yes'
+
+saveRDS(
+  object = gtf.df,
+  file = paste0(
+    path.gene.anno,
+    'gene.annotation.genecode.v22.rds')
+  )
+```
+
+## adding singscore housekeeping genes
+Add a list of Pan Cancer Housekeeping genes from the singscore package.
+```{r }
+sing.stable.genes <- singscore::getStableGenes(
+  n_stable = 199,
+  type = 'carcinoma',
+  id = 'ensembl')
+
+gene.annot$sinscore.hk <- 'no'
+gene.annot$sinscore.hk[gene.annot$gene_id.v %in% sing.stable.genes] <- 'yes'
+
+saveRDS(
+  object = gene.annot,
+  file = paste0(
+    gene.annot.path,
+    'gene.annotation.genecode.v22.rds'
+  ))
+```
+
+## Retrieve some gene information from bioMart
+
+```{r}
+library(biomaRt)
+ensembl <- useMart('ensembl') # 14 Dec 2018
+ensembl <- useDataset(
+  mart = ensembl,
+  'hsapiens_gene_ensembl'
+  )
+attr <- listAttributes(ensembl)
+grep('exon', attr$name, value = TRUE)
+bioMart.geneAnnot <- getBM(
+  attributes = c(
+    'entrezgene_id',
+    'hgnc_symbol',
+    'gene_biotype',
+    'ensembl_gene_id',
+    'description',
+    'family_description',
+    'chromosome_name',
+    'strand',
+    'percentage_gene_gc_content',
+    'transcript_count',
+    'transcript_length',
+    'band'
+    ),
+  values = gene.annot$gene_id.v,
+  mart = ensembl
+  )
+dim(bioMart.geneAnnot) # 249189     12
+keep <- !duplicated(bioMart.geneAnnot$ensembl_gene_id)
+bioMart.geneAnnot <- bioMart.geneAnnot[keep, ]
+colnames(bioMart.geneAnnot) <- paste0(
+  colnames(bioMart.geneAnnot),
+  '_BioMart'
+  )
+# 67149    12
+saveRDS(
+  bioMart.geneAnnot,
+  'geneAnnot.biomart.11082020.rds'
+  )
+```
+
+# Summerized experiment object
+Read gene expression data and matching with sample annotation. Saving all the HTSeq datasets, sample information and gene annotations in a summarized experiment object.
+```{r summerized-experiment-objects}
+expr.data.path <- paste0(
+    dataPath,
+    'TCGA_AllCancer_Harmonized/'
+    )
+meta.data.path <- paste0(
+  dataPath,
+  'TCGA_AllCancer_MetaClinicalInformation/'
+  )
+list.dataSets <- readRDS(
+  paste0(
+    dataPath,
+    'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds')
+  )
+colnames(all.files) <- gsub(
+  '-',
+  '.',
+  colnames(all.files)
+  )
+sum.expr.path <- paste0(
+  dataPath, 
+  'TCGA_AllCancer_SummarizedExperiment/'
+  )
+### gene annotation
+gene.annot.path <- paste0(
+  dataPath, 'HumanGenes_GeneCodeV22/'
+  )
+gene.annot <- readRDS(paste0(
+  gene.annot.path,
+  'gene.annotation.genecode.v22.rds')
+  ) #60483    27
+
+### gene annotation from biomart
+bioMart.gene.annot <- readRDS(paste0(
+  gene.annot.path,
+  'geneAnnot.biomart.11082020.rds')
+  ) #67149    12
+
+### Merge gene annotation files
+gene.annot <- merge(
+  gene.annot,
+  bioMart.gene.annot,
+  by.x = 'gene_id.v',
+  by.y = 'ensembl_gene_id_BioMart'
+  ) # 56534    38
+row.names(gene.annot) <- gene.annot$gene_id.v
+
+## saveing all the HTSeq datasets, sample information and gene annotations in a summarized experiment object
+req.package <- c(
+  'HDF5Array',
+  'SummarizedExperiment',
+  'dplyr'
+  )
+ncores <-  parallel::detectCores()-1
+cl <- parallel::makeCluster(ncores, setup_strategy = 'sequential')
+registerDoParallel(cl)
+foreach::foreach(i = 1:nrow(all.files), .packages = req.package) %dopar%  {
+  ## reading summarized experiment objects
+  # Raw counts
+  counts <- HDF5Array::loadHDF5SummarizedExperiment(
+    dir = paste0(
+      HarmonizedData_Path,
+      all.files$HTSeq.Counts[i])
+    )
+  counts <- as.matrix(SummarizedExperiment::assay(counts, 'HTSeq - Counts'))
+  # FPKM
+  fpkm <- HDF5Array::loadHDF5SummarizedExperiment(
+    dir = paste0(
+      HarmonizedData_Path,
+      all.files$HTSeq.FPKM[i])
+    )
+  fpkm <- as.matrix(SummarizedExperiment::assay(fpkm, 'HTSeq - FPKM'))
+  # FPKM + UQ
+  fpkm.uq <- HDF5Array::loadHDF5SummarizedExperiment(
+    dir = paste0(
+      HarmonizedData_Path,
+      all.files$HTSeq.FPKM.UQ[i])
+    )
+  fpkm.uq <- as.matrix(SummarizedExperiment::assay(fpkm.uq, 'HTSeq - FPKM-UQ'))
+
+  ### reading sample annotations
+  sample.annot <- readRDS(
+    paste0(
+      meta.data.path,
+      all.files$clinical.data[i])
+    )
+  remove.na <- !is.na(sample.annot$barcode__RNAseq)
+  sample.annot <- droplevels(sample.annot[remove.na,])
+  row.names(sample.annot) <- sample.annot$Sample
+  # common samples between the two
+  com.samples <- Reduce(
+    intersect,
+    list(
+      colnames(counts),
+      colnames(fpkm),
+      colnames(fpkm.uq),
+      row.names(sample.annot))
+  )
+  counts <- counts[, com.samples]
+  fpkm <- fpkm[, com.samples]
+  fpkm.uq <- fpkm.uq[, com.samples]
+  sample.annot <- sample.annot[ com.samples, ]
+
+  if((all.files$cancer.type[i] != 'TCGA-LAML') == TRUE){
+    sample.annot <- plyr::arrange(
+      sample.annot,
+      year_mda,
+      month_mda,
+      day_mda,
+      PlateId_mda)
+    row.names(sample.annot) <- sample.annot$Sample
+    counts <- counts[, sample.annot$Sample]
+    fpkm <- fpkm[, sample.annot$Sample]
+    fpkm.uq <- fpkm.uq[, sample.annot$Sample]
+  }else{
+    sample.annot <- arrange(
+      sample.annot,
+      PlateId_mda)
+    row.names(sample.annot) <- sample.annot$Sample
+    counts <- counts[, sample.annot$Sample]
+    fpkm <- fpkm[, sample.annot$Sample]
+    fpkm.uq <- fpkm.uq[, sample.annot$Sample]
+  }
+  com.genes <- Reduce(
+    intersect,
+    list(
+      row.names(counts),
+      row.names(fpkm),
+      row.names(fpkm.uq),
+      row.names(gene.annot))
+  )
+  counts <- counts[com.genes , ]
+  fpkm <- fpkm[com.genes,]
+  fpkm.uq <- fpkm.uq[com.genes,]
+  gene.annot.temp <- gene.annot[com.genes, ]
+
+  if(all.equal(colnames(counts), sample.annot$Sample) == TRUE &
+     all.equal(row.names(counts), row.names(gene.annot.temp)) == TRUE ){
+    
+    # saving the summarized experiments
+    SummarizedExperiment <- SummarizedExperiment::SummarizedExperiment(
+      assays = list(
+        HTseq_counts = counts,
+        HTseq_FPKM = fpkm,
+        HTseq_FPKM.UQ = fpkm.uq
+      ),
+      rowData = gene.annot.temp,
+      colData = sample.annot
+    )
+    saveRDS(
+      object = SummarizedExperiment,
+      file  = paste0(
+        sum.expr.path,
+        'TCGA_SummarizedExperiment_HTseq_',
+        all.files$cancer[i],
+        '.rds'))
+  }
+  else{
+    print('error: inconsistant names')
+  }
+  rm(i, counts, fpkm, fpkm.uq, sample.annot, com.genes, remove.na)
+}
+stopCluster(cl)
+```
+
+### Updating sample annotation files
+
+```{r }
+all.files$sum.expr <- gsub(
+  'MetaClinicalInformation',
+  'SummarizedExperiment_HTseq',
+  all.files$clinical.data
+)
+saveRDS(
+  object = all.files,
+  file = paste0(
+    dataPath,
+    'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds')
+  )
+```
+
+# QC
+## Tagging lowly expressed genes, filtering outlier samples and plates with less than 2 samples
+```{r lowly-exprGenes-allSamples}
+all.files <- readRDS(file = paste0(
+    dataPath,
+    'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds'))
+sum.expr.path <- paste0(
+  dataPath,
+  'TCGA_AllCancer_SummarizedExperiment/')
+list.files(sum.expr.path) ## 33
+
+req.package <- c('SummarizedExperiment')
+n.cores <- parallel::detectCores()-2
+cl <- parallel::makeCluster(
+  n.cores
+  )
+doParallel::registerDoParallel(cl)
+foreach::foreach(i = 1:nrow(all.files), .packages = req.package) %dopar%{
+  ## raw counts data
+  sumExpr.htseq.data <- readRDS(
+    file = paste0(
+      sum.expr.path,
+      all.files$sum.expr[i])
+  )
+  gene.annot <- data.frame(SummarizedExperiment::rowData(sumExpr.htseq.data))
+  sample.annot <- as.data.frame(SummarizedExperiment::colData(sumExpr.htseq.data))
+  counts <- as.matrix(SummarizedExperiment::assay(sumExpr.htseq.data, 'HTseq_counts'))
+  
+  ### cancer samples
+  normal.index <- grep('^11', sample.annot$tissue_RNAseq)
+  sample.annot$tissue <- 'cancer'
+  sample.annot$tissue[normal.index] <- 'normal'
+  if(length(normal.index) != 0){
+    cancer.data <- counts[ , -normal.index, drop = FALSE]
+    normal.data <- counts[ , normal.index, drop = F]
+    
+    keep.genes.cancer <- apply( 
+      cancer.data,
+      1,
+      function(x) length(x[x > 15]) >= ncol(cancer.data)*.1
+      )
+    keep.genes.normal <- apply(
+      normal.data,
+      1,
+      function(x) length(x[x > 15]) >= ncol(normal.data)*.1
+    )
+    
+    gene.annot$keep.cancer <- 'no'
+    gene.annot$keep.cancer[keep.genes.cancer] <- 'yes'
+    
+    gene.annot$keep.normal <- 'no'
+    gene.annot$keep.normal[keep.genes.normal] <- 'yes'
+    
+    keep.genes.cancer <- gene.annot$keep.cancer == 'yes' & 
+      gene.annot$protein.coding == 'yes'
+    ls.cancer <- colSums(cancer.data[keep.genes.cancer , ])
+    
+    outlier.ls.cancer <- scater::isOutlier(
+      ls.cancer, 
+      nmads = 3, 
+      type = 'lower'
+      )
+    outlier.ls.cancer <- names(which(outlier.ls.cancer == 'TRUE'))
+    sample.annot$outlier.ls.cancer <- 'no'
+    sample.annot$outlier.ls.cancer[sample.annot$Sample %in% outlier.ls.cancer] <- 'yes'
+    
+    ### Normal
+    keep.genes.normal <- gene.annot$keep.normal == 'yes' & 
+      gene.annot$protein.coding == 'yes'
+    ls.normal <- colSums(normal.data[keep.genes.normal , , drop = FALSE])
+    outlier.ls.normal <- scater::isOutlier(
+      ls.normal, 
+      nmads = 3, 
+      type = 'lower'
+      )
+    outlier.ls.normal <- names(which(outlier.ls.normal == 'TRUE'))
+    sample.annot$outlier.ls.normal <- 'no'
+    sample.annot$outlier.ls.normal[sample.annot$Sample %in% outlier.ls.normal] <- 'yes'
+    
+    ### plates with less than 2 samples - cancer
+    new.annot <- droplevels(sample.annot[-normal.index , ])
+    plates.cancer <- table(new.annot$plate_RNAseq[new.annot$outlier.ls.cancer == 'no'])
+    keep <- names(which(plates.cancer > 2))
+    sample.annot$plates.status.cancer <- 'no'
+    sample.annot$plates.status.cancer[sample.annot$plate_RNAseq %in% keep] <- 'yes'
+    rm(new.annot, keep)
+    
+    ### plates with less than 2 samples - normal
+    new.annot <- droplevels(sample.annot[normal.index , ])
+    plates.normal <- table(new.annot$plate_RNAseq[new.annot$outlier.ls.normal == 'no' ])
+    keep <- names(which(plates.normal > 2))
+    sample.annot$plates.status.normal <- 'no'
+    sample.annot$plates.status.normal[sample.annot$plate_RNAseq %in% keep] <- 'yes'
+    
+  }else{
+    keep.genes.cancer <- apply(
+      counts,
+      1,
+      function(x) length(x[x > 15]) >= ncol(counts)*.1
+    )
+    gene.annot$keep.cancer <- 'no'
+    gene.annot$keep.cancer[keep.genes.cancer] <- 'yes'
+    
+    keep.genes.cancer <- gene.annot$keep.cancer == 'yes' & gene.annot$protein.coding == 'yes'
+    ls.cancer <- colSums(counts[keep.genes.cancer , ])
+    outlier.ls.cancer <- scater::isOutlier(
+      ls.cancer, 
+      nmads = 3, 
+      type = 'lower'
+      )
+    outlier.ls.cancer <- names(which(outlier.ls.cancer == 'TRUE'))
+    sample.annot$outlier.ls.cancer <- 'no'
+    sample.annot$outlier.ls.cancer[sample.annot$Sample %in% outlier.ls.cancer] <- 'yes'
+    
+    ### plates with less than 2 samples - cancer
+    plates.samples.cancer <- table(sample.annot$plate_RNAseq[sample.annot$outlier.ls.cancer == 'no'])
+    keep <- names(which(plates.samples.cancer > 2))
+    sample.annot$plates.status.cancer <- 'no'
+    sample.annot$plates.status.cancer[sample.annot$plate_RNAseq %in% keep] <- 'yes'
+  }
+  
+  rowData(sumExpr.htseq.data) <- gene.annot
+  colData(sumExpr.htseq.data) <- DataFrame(sample.annot)
+  saveRDS(
+    object = sumExpr.htseq.data,
+    file  = paste0(
+      sum.expr.path,
+      'TCGA_SummarizedExperiment_HTseq_',
+      all.files$cancer[i],
+      '.rds')
+  )
+}
+stopCluster(cl)
+```
+
+# Estimate tumour purity using singscore
+Estimate tumor purity using the singscore R package and the immune and stromal gene signatures.
+```{r estimate-tumorPurity}
+sum.expr.path <- paste0(
+  dataPath,
+  'TCGA_AllCancer_SummarizedExperiment/'
+  )
+all.files <- readRDS(paste0(
+   dataPath,
+   'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds')
+   )
+
+n.cores <- parallel::detectCores()-1
+cl <- parallel::makeCluster(n.cores)
+doParallel::registerDoParallel(cl)
+req.package <- c(
+  'HDF5Array',
+  'SummarizedExperiment',
+  'singscore'
+  )
+foreach::foreach(i = 1:nrow(all.files), .packages = req.package) %dopar% {
+  ## raw counts data
+  htseq.data <- readRDS(
+    file = paste0(
+      sum.expr.path,
+      all.files$sum.expr[i])
+  )
+  data.sets <- names(SummarizedExperiment::assays(htseq.data))
+  gene.annot <- data.frame(SummarizedExperiment::rowData(htseq.data))
+  stromal.immune <- row.names(gene.annot)[
+    gene.annot$stromal == 'yes' |
+      gene.annot$immnue == 'yes'
+    ]
+  sample.info <-  data.frame(SummarizedExperiment::colData(htseq.data))
+  keep.genes <- gene.annot$keep.cancer == 'yes' &
+    gene.annot$protein.coding == 'yes'
+
+  for(j in 1:3){
+    # Tumour purity
+    data.temp <- assay(htseq.data, data.sets[j])
+    data.temp <- data.temp[keep.genes, ]
+    
+    rank.data.temp <-  singscore::rankGenes(data.temp)
+    purity.estimate.all <- singscore::simpleScore(
+      rank.data.temp,
+      upSet = stromal.immune,
+      centerScore = FALSE,
+      knownDirection = TRUE
+    )$TotalScore
+    sample.info[,paste0('purity_', data.sets[j])] <-
+      round(1-purity.estimate.all, 3)
+  }
+
+  colData(htseq.data) <- DataFrame(sample.info)
+  saveRDS(
+    object = htseq.data,
+    file  = paste0(
+      sum.expr.path,
+     all.files$sum.expr[i])
+    )
+}
+stopCluster(cl)
+```
+
+
+```{r}
+purity.panCancer <- lapply(
+  1:33,
+  function(x){
+    dd <- readRDS(paste0(
+      har.meta.data.path,
+     har.cancer.dataSets$HTseq.MetaData[x]))
+    p <- as.data.frame(cbind(dd$ESTIMATE_NatCom, dd$CPE_NatCom, dd$purity_HTseq_FPKM.UQ))
+    colnames(p) <- c('ESTIMATE', 'CPE', 'Singscore')
+    p$cancer <- rep(har.cancer.dataSets$cancer[x], nrow(p))
+    p
+  })
+all <- do.call(rbind, purity.panCancer)
+
+all <- all[complete.cases(all) , ]
+all <- droplevels(all)
+tiff(paste0(
+  brcaPath,
+  'TCGA_PanCancer_TumourPuirty_EstimateCPE.tiff'),
+  width = 2800,
+  height = 1200,
+  res = 400
+    )
+ggplot(all, aes(x = ESTIMATE, y = CPE)) +
+  geom_point(pch = 19, alpha = .3, color = 'darkgreen', size = 1) +
+  facet_wrap(~ cancer, ncol = 7) +
+  stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .5,
+    label.y.npc = .1,
+    method = 'spearman',
+    hjust = 0,
+    size = 3,
+    col = 'cyan',
+    cor.coef.name = "rho"
+  ) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 12),
+    strip.text.x = element_text(size = 8)
+  )
+dev.off()
+
+tiff(paste0(
+  brcaPath,
+  'TCGA_PanCancer_TumourPuirty_SingscoreCPE.tiff'),
+  width = 2800,
+  height = 1200,
+  res = 400
+    )
+ggplot(all, aes(x = Singscore, y = CPE)) +
+  geom_point(pch = 19, alpha = .3, color = 'darkgreen', size = 1) +
+  facet_wrap(~ cancer, ncol = 7) +
+  xlab('Tumour purity scores') +
+  stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .5,
+    label.y.npc = .1,
+    method = 'spearman',
+    hjust = 0,
+    size = 3,
+    col = 'cyan',
+    cor.coef.name = "rho"
+  ) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 12),
+    strip.text.x = element_text(size = 8)
+  )
+dev.off()
+
+tiff(paste0(
+  brcaPath,
+  'TCGA_PanCancer_TumourPuirty_SingscoreESTIMATE.tiff'),
+  width = 2800,
+  height = 1200,
+  res = 400
+    )
+ggplot(all, aes(x = Singscore, y = ESTIMATE)) +
+  geom_point(pch = 19, alpha = .3, color = 'darkgreen', size = 1) +
+  facet_wrap(~cancer, ncol = 7) +
+  xlab('Tumour purity scores') +
+  stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .5,
+    label.y.npc = .1,
+    method = 'spearman',
+    hjust = 0,
+    size = 3,
+    col = 'cyan',
+    cor.coef.name = "rho"
+  ) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    axis.text.x = element_text(size = 7),
+    axis.text.y = element_text(size = 7),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 12),
+    strip.text.x = element_text(size = 8)
+  )
+dev.off()
+```
+
+# Assessing tumour purity
+
+```{r}
+### Assess purity estimates ######################################################################
+har.meta.data.path <- paste0(
+  dataPath,
+  'TCGA_PanCancer_Harmonized_MetaData/'
+  )
+har.cancer.dataSets <- readRDS(paste0(
+   har.meta.data.path,
+   'TCGA_Harmonized_Cancer_MetaDataFiles.rds')
+   )
+
+### Cancer types with CPE estimates
+path.tumour.purity <- paste0(dataPath, 'TCGA_PanCan_TumorPurity_NCom_SuppInfo/')
+tumour.purity <- read.delim(
+  paste0(
+    path.tumour.purity,
+    'tcga.pan.cancer.purity.cpe.txt')
+  )# 9364  8
+
+cancerTypes.cpe <- unique(tumour.purity$Cancer.type)
+
+har.cancer.dataSets$cpe <- 'no'
+har.cancer.dataSets$cpe[har.cancer.dataSets$cancer.types %in% cancerTypes.cpe] <- 'yes'
+
+saveRDS(
+  object = har.cancer.dataSets,
+  file = paste0(
+    har.meta.data.path,
+    'TCGA_Harmonized_Cancer_MetaDataFiles.rds'))
+
+har.meta.data.path <- paste0(
+  dataPath,
+  'TCGA_PanCancer_Harmonized_MetaData/'
+  )
+har.cancer.dataSets <- readRDS(paste0(
+   har.meta.data.path,
+   'TCGA_Harmonized_Cancer_MetaDataFiles.rds')
+   )
+
+for(i in 1:nrow(har.cancer.dataSets)) {
+  htseq.data <- readRDS(
+    paste0(
+    har.meta.data.path,
+    har.cancer.dataSets$[i])
+    )
+  pdf(paste0(
+    figPath,
+    'TCGA_PanCancer_Purity_Assessment_',
+    har.cancer.dataSets$cancer.types[i],
+    '.pdf'), 
+    width = 12, 
+    height = 8
+    )
+  sample.info <- data.frame(colData(htseq.data))
+  if(har.cancer.dataSets$cpe[i] == 'yes'){
+    sample.info <- sample.info[c(
+      'purity_HTseq_counts',
+      'purity_HTseq_FPKM',
+      'CPE_NatCom',
+      'ESTIMATE_NatCom',
+      'year_mda',
+      'plate_expr.data',
+      'BatchId_mda'
+    )]
+    # sample.info$CPE_NatCom[is.na(sample.info$CPE_NatCom)] <- 
+    #   mean(sample.info$CPE_NatCom)
+    # sample.info$ESTIMATE_NatCom[is.na(sample.info$ESTIMATE_NatCom)] <- 
+    #   mean(sample.info$ESTIMATE_NatCom)
+    
+    sample.info.a <- sample.info %>% 
+      tidyr::pivot_longer(
+        -c(year_mda,plate_expr.data,BatchId_mda),
+        values_to = 'purity',
+        names_to = 'methods') %>% 
+      data.frame(.)
+    
+    p1 <- ggplot(sample.info.a, aes(x = year_mda, y = purity)) +
+      geom_boxplot() +
+      facet_wrap(~methods, ncol = 4, scales = 'free_y') 
+
+    p2 <- ggplot(sample.info.a, aes(x = plate_expr.data , y = purity)) +
+      geom_boxplot() +
+      facet_wrap(~methods, ncol = 4, scales = 'free_y')
+
+    p3 <- ggplot(sample.info.a, aes(x =  BatchId_mda, y = purity)) +
+      geom_boxplot() +
+      facet_wrap(~methods, ncol = 4, scales = 'free_y')
+    grid.arrange(p1,p2,p3, ncol = 1, nrow = 3)
+    
+    p <- GGally::ggpairs(sample.info[, c(1:4)])
+    print(p)}
+  else{
+      sample.info <- sample.info[c(
+      'purity_HTseq_counts',
+      'purity_HTseq_FPKM',
+      'year_mda',
+      'plate_expr.data',
+      'BatchId_mda'
+    )]
+    sample.info.a <- sample.info %>% 
+      tidyr::pivot_longer(
+        -c(year_mda,plate_expr.data,BatchId_mda),
+        values_to = 'purity',
+        names_to = 'methods') %>% 
+      data.frame(.)
+    p1 <- ggplot(sample.info.a, aes(x = year_mda, y = purity)) +
+      geom_boxplot() +
+      facet_wrap(~methods, ncol = 4, scales = 'free_y' )
+
+    p2 <- ggplot(sample.info.a, aes(x = plate_expr.data , y = purity)) +
+      geom_boxplot() +
+      facet_wrap(~methods, ncol = 4, scales = 'free_y' )
+
+    p3 <- ggplot(sample.info.a, aes(x =  BatchId_mda, y = purity)) +
+      geom_boxplot() +
+      facet_wrap(~methods, ncol = 4, scales = 'free_y')
+    grid.arrange(p1, p2, p3, ncol = 1, nrow = 3)
+    
+    p <- GGally::ggpairs(sample.info[, c(1:2)] )
+    print(p)
+    }
+  dev.off()
+  }
+```
+
+# ANOVA
+
+```{r}
+ftest.purity <- lapply(
+  1:33,
+  function(x){
+    htseq.data <- readRDS(
+    paste0(
+    har.meta.data.path,
+    har.cancer.dataSets$har.meta.data.filtered[x])
+    )
+
+  sample.info <- data.frame(colData(htseq.data))
+  sample.info <- sample.info[c(
+      'purity_HTseq_counts',
+      'purity_HTseq_FPKM',
+      'year_mda',
+      'plate_expr.data',
+      'BatchId_mda'
+    )]
+
+  if(har.cancer.dataSets$AF.years[x] > 1){
+    ftest_fpkm_year <- dropterm(
+      lm(sample.info$purity_HTseq_FPKM ~ sample.info$year_mda),
+      test = 'F')[c(5:6)]
+    year <- ftest_fpkm_year[[2]][2]
+    }else{year <- 2}
+  if(har.cancer.dataSets$AF.plates[x] > 1){
+    ftest_fpkm_plate <- dropterm(
+      lm(sample.info$purity_HTseq_FPKM ~ sample.info$plate_expr.data),
+      test = 'F')[c(5:6)]
+    plate <- ftest_fpkm_plate[[2]][2]
+
+    }else{plate <- 2}
+  if(har.cancer.dataSets$AF.batchids[x] > 1){
+    ftest_fpkm_batch <- dropterm(
+      lm(sample.info$purity_HTseq_FPKM ~ sample.info$BatchId_mda),
+      test = 'F')[c(5:6)]
+    batch <- ftest_fpkm_batch[[2]][2]
+  }else{batch <- 2}
+  return(list(year = year, plate = plate, batch = batch))
+  message(x)
+  })
+
+names(ftest.purity) <- har.cancer.dataSets$cancer
+saveRDS(
+  object = ftest.purity,
+  file = paste0(
+    dataPath, 'Ftest_singscorePurity_years_plates_batch.rds'))
+
+ftest.purity <- readRDS(paste0(
+  dataPath, 'Ftest_singscorePurity_years_plates_batch.rds')
+  )
+
+years <- unlist(sapply(har.cancer.dataSets$cancer , 
+       function(x) ftest.purity[[x]]$year))
+plates <- unlist(sapply(har.cancer.dataSets$cancer , 
+       function(x) ftest.purity[[x]]$plate))
+batches <- unlist(sapply(har.cancer.dataSets$cancer , 
+       function(x) ftest.purity[[x]]$batch))
+
+bad.cancers <- unique(c(
+  names(which(plates < 0.01))
+  ))
+```
+
+# Relationship between purity and immnue/stromal gene sig
+
+```{r}
+ncores <- detectCores()-1
+cl <- makeCluster(ncores, setup_strategy = 'sequential')
+registerDoParallel(cl)
+req.package <- c('SummarizedExperiment','MASS')
+
+
+resid.rlm <- foreach(i = 1:nrow(har.cancer.dataSets), .packages = req.package) %dopar% {
+  htseq.data <- readRDS(paste0(
+    har.meta.data.path,
+    har.cancer.dataSets$har.meta.data.filtered[i])
+    ) 
+  keep.genes <- rowData(htseq.data)$keep.procod.cancer == 'yes'
+  fpkm.uq <- assay(htseq.data, 'HTseq_counts')
+  fpkm.uq <- log2(fpkm.uq[keep.genes , ]+1)
+  gene.annot <- as.data.frame(rowData(htseq.data))
+  
+  stromal.immune <- row.names(gene.annot)[
+    gene.annot$stromal == 'yes' |
+      gene.annot$immnue == 'yes'
+    ]
+  co.genes <- intersect(row.names(fpkm.uq), stromal.immune)
+  res <- apply(
+    fpkm.uq[co.genes , ], 
+    1, 
+    function(x){
+      cor.test(x, htseq.data$purity_HTseq_FPKM.UQ, method = 'spearman')[[4]]
+    })
+  return(res)
+}
+stopCluster(cl)
+
+names(resid.rlm) <- har.cancer.dataSets$cancer.types
+final <- vector()
+for(i in 1:33){
+  resi <- as.vector(resid.rlm[[i]])
+  df <- data.frame(
+    resi = resi, 
+    cancer = rep(names(resid.rlm)[i], length(resi) )
+    )
+  final <- rbind(final, df)
+}
+
+ggplot(final, aes(y=cancer, x=resi)) +
+     geom_density_ridges_gradient(scale = 3, rel_min_height = 0.01) +
+    scale_fill_viridis(discrete=TRUE) +
+    scale_color_viridis(discrete=TRUE) +
+    theme(
+      legend.position="none",
+      panel.spacing = unit(0.1, "lines"),
+      strip.text.x = element_text(size = 8)
+    ) +
+    xlab("") +
+    ylab("Assigned Probability (%)")
+
+```
+
+# Correlation between genes and purity
+consensus correlation between gene and purity across all cancer types
+
+```{r}
+ncores <- detectCores()-1
+cl <- makeCluster(ncores, setup_strategy = 'sequential')
+registerDoParallel(cl)
+req.package <- c('SummarizedExperiment','MASS')
+
+gene.purity.correlation <- foreach(i = 1:nrow(har.cancer.dataSets), .packages = req.package) %dopar% {
+  htseq.data <- readRDS(paste0(
+    har.meta.data.path,
+    har.cancer.dataSets$har.meta.data.filtered[i])
+    ) 
+  keep.genes <- rowData(htseq.data)$keep.procod.cancer == 'yes'
+  fpkm.uq <- assay(htseq.data, 'HTseq_FPKM.UQ')
+  fpkm.uq <- log2(fpkm.uq[keep.genes , ]+1)
+  gene.annot <- as.data.frame(rowData(htseq.data))
+  
+  stromal.immune <- row.names(gene.annot)[
+    gene.annot$stromal == 'yes' |
+      gene.annot$immnue == 'yes'
+    ]
+  
+  cor <- apply(
+    fpkm.uq, 
+    1, 
+    function(x){
+      cor.test(x, htseq.data$purity_HTseq_FPKM.UQ, method = 'spearman')[[4]]
+    })
+  return(cor)
+}
+stopCluster(cl)
+names(gene.purity.correlation) <- har.cancer.dataSets$cancer.types
+mymerge <- function(mylist) {
+  names(mylist) <- sapply(mylist, function(x) names(x)[2])
+  ns <- unique(unlist(lapply(mylist, function(x) levels(x$names))))
+  as.data.frame(c(list(names=ns), lapply(mylist, function(x) 
+                         {x[match(ns, x$names),2]})))
+}
+```
+

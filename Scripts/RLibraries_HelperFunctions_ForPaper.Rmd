@@ -1,0 +1,1794 @@
+---
+title: "Libraries and helper functions"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "15-02-2020"
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 5
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+# Introduction
+This R markdown contains all R libraries and helper functions that are required to re-produce all results and figures in our paper [RMolania et.al 2022]. Note that, we also provide two R scripts that contain R libraries and helper functions that are required for the vignettes.  
+
+# R libraries
+
+```{r}
+library(cowplot)
+library(ggplot2)
+library(dplyr)
+library(SummarizedExperiment)
+library(ComplexHeatmap)
+library(mclust)
+library(survival)
+library(ggfortify)
+library(RColorBrewer)
+library(TCGAbiolinks)
+library(HDF5Array)
+library(readxls)
+library(parallel)
+library(foreach)
+library(ggjoy)
+library(wesanderson)
+library(mclust)
+library(ppcor)
+library(genefu)
+library(ruv)
+```
+
+# Reading excel sheets
+
+```{r}
+read.excel.allsheets <- function(filename, tibble = FALSE) {
+  sheets <- readxl::excel_sheets(filename)
+  x <- lapply(
+    sheets,
+    function(y) {
+      readxl::read_excel(filename, sheet = y)
+    })
+  if (!tibble)
+    x <- lapply(x, as.data.frame)
+  names(x) <- sheets
+  x
+}
+```
+
+# Extract details from the MDA batch information
+This function extracts batch details of the MDS batch information data.
+```{r}
+### Tidy batch information  
+tidy.bacth.info.mda <- function(path, df) {
+  temp.df <- read.delim(paste0(path, df))
+  temp.df <- temp.df %>%
+    dplyr::mutate(
+      sample.id = substr(Sample, 1, 16),
+      year = substr(ShipDate, 1, 4),
+      month = substr(ShipDate, 6, 7),
+      day = substr(ShipDate, 9, 10),
+      center = substr(Sample, 27, 28),
+      protion = substr(Sample, 18, 19),
+      protion = substr(Sample, 18, 19),
+      sample.id.a = substr(Sample, 1, 12),
+      sample.id.b = substr(Sample, 1, 15),
+      sample.id.c = substr(Sample, 1, 16),
+      sample.id.d = substr(Sample, 1, 20),
+      vial = substr(Sample, 16, 16)
+    )
+  temp.df
+}
+```
+
+# Extract details from TCGA samples barcode
+This function extracts batch details from TCGA sample barcode.
+
+```{r}
+decode.tcga.barcode <- function(code, sep){
+  temp <- sapply(
+    code, 
+    function(y) strsplit(
+      x = y, 
+      split = sep))
+  temp <- as.data.frame(t(
+    data.frame(temp))
+  )
+  colnames(temp) <-
+    c('project',
+      'tss',
+      'participant',
+      'tissue',
+      'vial',
+      'plate',
+      'center')
+  row.names(temp) <- gsub(
+    '\\.',
+    '-',
+    row.names(temp)
+  )
+  temp
+}
+```
+
+# PCA
+```{r}
+.pca <- function(data, is.log) {
+  if (is.log)
+    data <- data
+  else
+    data <- log2(data + 1)
+  svd <- base::svd(scale(
+    x = t(data),
+    center = TRUE,
+    scale = FALSE
+  ))
+  percent <- svd$d ^ 2 / sum(svd$d ^ 2) * 100
+  percent <- sapply(
+      seq_along(percent),
+      function(i) round(percent[i], 1))
+  return(
+    list(
+    sing.val = svd,
+    variation = percent)
+    )
+}
+```
+
+# RLE
+```{r}
+.rle.comp <- function(expr.data, is.log) {
+  if (is.log)
+    expr.data <- expr.data
+  else
+    expr.data <- log2(expr.data + 1)
+  rle.data <- expr.data - matrixStats::rowMedians(expr.data)
+  rle.med <- matrixStats::colMedians(rle.data)
+  rle.iqr <- matrixStats::colIQRs(rle.data)
+  return(list(
+    rle = rle.data,
+    rle.med = rle.med,
+    rle.iqr = rle.iqr
+  ))
+}
+```
+
+# Correlation between genes and a variable
+```{r}
+.corr.gene.variable <- function(
+  expr.data, 
+  is.log, 
+  variable, 
+  method, 
+  n.cores, 
+  group)
+  {
+  if(is.log) expr.data <- expr.data
+  else expr.data <- log2(expr.data + 1)
+  rho <- parallel::mclapply(
+    1:nrow(expr.data),
+    function(x){
+      round(cor.test(
+        x = expr.data[x, ], 
+        y = variable, 
+        method = method)[[4]], 6)},
+    mc.cores = n.cores
+    )
+  pval <- parallel::mclapply(
+    1:nrow(expr.data),
+    function(x){
+      cor.test(
+        x = expr.data[x, ], 
+        y = variable,
+        method = method)[[3]]},
+    mc.cores = n.cores)
+  
+  results <- data.frame(
+    genes = row.names(expr.data),
+    rho = unlist(rho), 
+    pvalue = unlist(pval), 
+    adj.pvalue = p.adjust(unlist(pval), 'BH')
+  )
+  colnames(results) <- paste(
+    group, 
+    colnames(results), 
+    sep = '_'
+    )
+  return(results)
+}
+
+.corr.gene.variable.fast <- function(
+  expr.data, 
+  is.log, 
+  variable, 
+  method, 
+  group){
+    if(is.log) expr.data <- expr.data
+  else expr.data <- log2(expr.data + 1)
+  rho <- stats::cor(x = t(expr.data), y = variable, method = method)
+  results <- data.frame(
+    genes = row.names(rho), 
+    rho = rho[,1]
+    )
+    colnames(results) <- paste(
+    group, 
+    colnames(results), 
+    sep = '_'
+    )
+     return(results)
+  }
+```
+
+# ANOVA
+
+```{r}
+.Ftest <- function(
+  data, 
+  variable, 
+  is.log, 
+  n.cores
+  )
+  {
+  if(is.log) data <- data
+  else data <- log2(data + 1)
+  f.test <- parallel::mclapply(
+    1:nrow(data),
+    function(x) {
+      MASS::dropterm(lm(data[x , ] ~ variable), test = 'F')[c(5:6)]
+      }
+    , mc.cores = n.cores)
+  f.test <- data.frame(
+    Genes = row.names(data),
+    FValue = round(unlist(
+      lapply(
+        f.test, 
+        function(x) x$`F Value`[2])), digits = 4
+      ) ,
+    PValue = unlist(lapply(
+      f.test, 
+      function(x) x$`Pr(F)`[2])
+      )
+  )
+  return(f.test)
+  }
+```
+
+# PCA with density plots
+```{r}
+.scatter.density.pc <- function(
+  pcs, 
+  pc.var, 
+  group.name, 
+  group, 
+  color, 
+  strokeSize, 
+  pointSize, 
+  strokeColor,
+  alpha
+  ){
+  pair.pcs <- utils::combn(ncol(pcs), 2)
+  pList <- list()
+  for(i in 1:ncol(pair.pcs)){
+    if(i == 1){
+      x <- pair.pcs[1,i]
+      y <- pair.pcs[2,i]
+      p <- ggplot(mapping = aes(
+        x = pcs[,x], 
+        y = pcs[,y], 
+        fill = group)) +
+        xlab(paste0('PC', x, ' (', pc.var[x], '%)')) +
+        ylab(paste0('PC', y, ' (', pc.var[y], '%)')) +
+        geom_point(
+          aes(fill = group), 
+          pch = 21, 
+          color = strokeColor, 
+          stroke = strokeSize, 
+          size = pointSize,
+          alpha = alpha) +
+        scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
+        scale_y_continuous(breaks = scales::pretty_breaks(n = 5)) +
+        theme(
+          legend.position = "right",
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black", size = 1.1),
+          legend.background = element_blank(),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 14),
+          legend.key = element_blank(),
+          axis.text.x = element_text(size = 10),
+          axis.text.y = element_text(size = 10),
+          axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 14)) +
+        guides(fill = guide_legend(override.aes = list(size = 4))) + 
+        scale_fill_manual(name = group.name, values = color)
+        
+      le <- ggpubr::get_legend(p)
+    }else{
+      x <- pair.pcs[1,i]
+      y <- pair.pcs[2,i]
+      p <- ggplot(mapping = aes(
+        x = pcs[,x], 
+        y = pcs[,y], 
+        fill = group)) +
+        xlab(paste0('PC', x, ' (',pc.var[x],  '%)')) +
+        ylab(paste0('PC', y, ' (',pc.var[y], '%)')) +
+        geom_point(
+          aes(fill = group), 
+          pch = 21, 
+          color = strokeColor, 
+          stroke = strokeSize,
+          size = pointSize,
+          alpha = alpha) +
+        scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
+        scale_y_continuous(breaks = scales::pretty_breaks(n = 5)) +
+        theme(
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black", size = 1.1),
+          legend.position = "none",
+          axis.text.x = element_text(size = 10),
+          axis.text.y = element_text(size = 10),
+          axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 14)) +
+        scale_fill_manual(values = color, name = group.name)
+    }
+    p <- p + theme(legend.position = "none")
+    xdens <- cowplot::axis_canvas(p, axis = "x")+
+      geom_density(
+        mapping = aes(
+          x = pcs[,x], 
+          fill = group),
+        alpha = 0.7, 
+        size = 0.2
+      ) +
+      theme(legend.position = "none") +
+      scale_fill_manual(values = color)
+    
+    ydens <- cowplot::axis_canvas(
+      p, 
+      axis = "y", 
+      coord_flip = TRUE) +
+      geom_density(
+        mapping = aes(
+          x = pcs[,y],
+          fill = group),
+        alpha = 0.7,
+        size = 0.2) +
+      theme(legend.position = "none") +
+      scale_fill_manual(name = group.name, values = color) +
+      coord_flip()
+    
+    p1 <- insert_xaxis_grob(
+      p,
+      xdens,
+      grid::unit(.2, "null"),
+      position = "top"
+    )
+    p2 <- insert_yaxis_grob(
+      p1,
+      ydens,
+      grid::unit(.2, "null"),
+      position = "right"
+    )
+    pList[[i]] <- ggdraw(p2)
+  }
+  pList[[i+1]] <- le
+  return(pList)
+}
+
+```
+
+# PCA with density plots2
+```{r}
+.scatter.density.pc2 <- function(
+  pcs, 
+  pc.var, 
+  group.name, 
+  group, 
+  color, 
+  strokeSize, 
+  pointSize, 
+  strokeColor,
+  alpha
+  ){
+  pair.pcs <- utils::combn(ncol(pcs), 2)
+  pList <- list()
+  for(i in 1:ncol(pair.pcs)){
+    if(i == 1){
+      x <- pair.pcs[1,i]
+      y <- pair.pcs[2,i]
+      p <- ggplot(mapping = aes(
+        x = pcs[,x], 
+        y = pcs[,y], 
+        fill = group)) +
+        xlab(paste0('PC', x, ' (', pc.var[x], '%)')) +
+        ylab(paste0('PC', y, ' (', pc.var[y], '%)')) +
+        geom_point(
+          aes(fill = group), 
+          pch = 21, 
+          color = strokeColor, 
+          stroke = strokeSize, 
+          size = pointSize,
+          alpha = alpha) +
+        scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
+        scale_y_continuous(breaks = scales::pretty_breaks(n = 5)) +
+        theme(
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black", size = 1.1),
+          legend.background = element_blank(),
+          legend.text = element_text(size = 12),
+          legend.title = element_text(size = 14),
+          legend.key = element_blank(),
+          axis.text.x = element_text(size = 10),
+          axis.text.y = element_text(size = 10),
+          axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 14)) +
+        guides(fill = guide_legend(override.aes = list(size = 4))) + 
+        scale_fill_manual(name = group.name, values = color)
+
+    }else{
+      x <- pair.pcs[1,i]
+      y <- pair.pcs[2,i]
+      p <- ggplot(mapping = aes(
+        x = pcs[,x], 
+        y = pcs[,y], 
+        fill = group)) +
+        xlab(paste0('PC', x, ' (',pc.var[x],  '%)')) +
+        ylab(paste0('PC', y, ' (',pc.var[y], '%)')) +
+        geom_point(
+          aes(fill = group), 
+          pch = 21, 
+          color = strokeColor, 
+          stroke = strokeSize,
+          size = pointSize,
+          alpha = alpha) +
+        scale_x_continuous(breaks = scales::pretty_breaks(n = 5)) +
+        scale_y_continuous(breaks = scales::pretty_breaks(n = 5)) +
+        theme(
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black", size = 1.1),
+          axis.text.x = element_text(size = 10),
+          axis.text.y = element_text(size = 10),
+          axis.title.x = element_text(size = 14),
+          axis.title.y = element_text(size = 14)) +
+        scale_fill_manual(values = color, name = group.name)
+    }
+    p <- p 
+    xdens <- cowplot::axis_canvas(p, axis = "x")+
+      geom_density(
+        mapping = aes(
+          x = pcs[,x], 
+          fill = group),
+        alpha = 0.7, 
+        size = 0.2
+      ) +
+      theme(legend.position = "none") +
+      scale_fill_manual(values = color)
+    
+    ydens <- cowplot::axis_canvas(
+      p, 
+      axis = "y", 
+      coord_flip = TRUE) +
+      geom_density(
+        mapping = aes(
+          x = pcs[,y],
+          fill = group),
+        alpha = 0.7,
+        size = 0.2) +
+      theme(legend.position = "none") +
+      scale_fill_manual(name = group.name, values = color) +
+      coord_flip()
+    
+    p1 <- insert_xaxis_grob(
+      p,
+      xdens,
+      grid::unit(.2, "null"),
+      position = "top"
+    )
+    p2 <- insert_yaxis_grob(
+      p1,
+      ydens,
+      grid::unit(.2, "null"),
+      position = "right"
+    )
+    pList[[i]] <- ggdraw(p2)
+  }
+  return(pList)
+}
+
+```
+
+# Silhouette coefficient
+```{r}
+.silhouette.coeff <- function(
+  pcs, 
+  variable, 
+  nPCs)
+  {
+  d.matrix <- as.matrix(stats::dist(pcs[, seq_len(nPCs)]))
+  summary(cluster::silhouette(
+    as.numeric(as.factor(variable)), 
+    d.matrix))$avg.width
+  }
+```
+
+# Wilcoxon Rank Sum test
+```{r}
+.wilcoxon.test <- function(
+  expr.data, 
+  is.log, 
+  variable, 
+  n.cores
+  ){
+  if(is.log){
+    expr.data <- expr.data
+  }
+  else{
+    expr.data <- log2(expr.data + 1)
+  }
+  pval <- parallel::mclapply(
+    row.names(expr.data), 
+    function(x) stats::wilcox.test(expr.data[x ,] ~ variable)[[3]], mc.cores = n.cores)
+  results <- data.frame(
+    genes = row.names(expr.data),
+    pvalue = unlist(pval),
+    ad.pvalue = p.adjust(p = unlist(pval), method = 'BH')
+  )
+  return(results)
+}
+```
+
+# Add average line to ggplot
+```{r}
+StatMeanLine <- ggproto("StatMeanLine", Stat,
+  compute_group = function(data, scales) {
+    transform(data, yintercept=mean(y))
+  },
+  required_aes = c("x", "y")
+)
+stat_mean_line <- function(
+  mapping = NULL, data = NULL, geom = "hline",
+  position = "identity", na.rm = FALSE, show.legend = NA,
+  inherit.aes = TRUE, ...) {
+  layer(
+    stat = StatMeanLine, data = data, mapping = mapping, geom = geom, 
+    position = position, show.legend = show.legend, inherit.aes = inherit.aes,
+    params = list(na.rm = na.rm, ...)
+  )
+}
+```
+
+# TCGA PAM50 classifier
+```{r}
+.pam50.classifier <- function(expr.data, tcga.calibration = FALSE, ncores) {
+  pamPath <- paste0(
+    '../data/TCGA_BRCA_DataSets/',
+    'TCGA_PAM50_Classifier/'
+    )
+  ### PAM50 centroid
+  pam50.centroid <- read.delim(
+    paste0(
+      pamPath,
+      'R_code_rnaseq/', 
+      'pam50_centroids.txt'),
+    stringsAsFactors = FALSE
+    )
+  pam50.centroid$X[pam50.centroid$X == 'KNTC2'] <- 'NDC80'
+  pam50.centroid$X[pam50.centroid$X == 'CDCA1'] <- 'NUF2'
+  pam50.centroid$X[pam50.centroid$X == 'ORC6L'] <- 'ORC6'
+  ### TCGA calibration parameter
+  if(tcga.calibration){
+    medians <- readarray(paste0(
+      pamPath,
+      'R_code_rnaseq/',
+      'mediansPerDataset_v2.txt'), 
+      hr = 1
+    )
+    calibrationParameters <- 6
+    row.names(medians$xd)[row.names(medians$xd) == 'KNTC2'] <- 'NDC80'
+    row.names(medians$xd)[row.names(medians$xd) == 'CDCA1'] <- 'NUF2'
+    row.names(medians$xd)[row.names(medians$xd) == 'ORC6L'] <- 'ORC6'
+    
+    expr.data <- expr.data[ match(pam50.centroid$X, row.names(expr.data)) , ]
+    tm <- genefu::overlapSets(medians$xd, expr.data)
+    
+    expr.data <- tm$y - tm$x[ , calibrationParameters]
+  }else{
+    expr.data <- expr.data 
+    expr.data <- expr.data[ match(pam50.centroid$X, row.names(expr.data)) , ]
+  }
+  row.names(pam50.centroid) <- pam50.centroid$X
+  pam50.prediction <- sspPredict(
+    pam50.centroid[, 2:6],
+    classes = "",
+    expr.data,
+    std = FALSE,
+    distm = "spearman",
+    centroids = TRUE,
+    ncores = ncores
+  )
+  return(pam50.prediction)
+}
+
+
+readarray <- function(
+  dataFile, 
+  designFile = NA, 
+  hr = 1, 
+  impute = TRUE, 
+  method = "mean"){
+  headerRows <- hr
+  x <- read.table(
+    dataFile, 
+    sep = "\t", 
+    header = FALSE, 
+    fill = TRUE, 
+    stringsAsFactors = FALSE
+  )
+  if(headerRows == 1){
+    sampleNames <- as.vector(t(x[1,-1]))
+    x <- x[-1,]
+    classes <- NULL
+    ids <- x[,1]
+    xd <- x[,-1]
+    xd <- apply(xd, 2, as.numeric)
+    xd <- collapseIDs(xd, ids, method)	
+  }else{
+    sampleNames <- as.vector(t(x[1,-1]))
+    x <- x[-1,]
+    classes <- x[1:(headerRows - 1), ]
+    dimnames(classes)[[1]] <- classes[, 1]
+    classes <- classes[, -1]
+    classes[classes == ""] <- NA
+    classes <- t(classes)
+    rownames(classes) <- sampleNames
+    classes <- as.data.frame(classes)
+    
+    xd <- x[(-1:-(headerRows - 1)), ]
+    ids <- as.vector(t(xd[, 1]))
+    xd <- xd[, -1]
+    xd <- apply(xd, 2, as.numeric)
+    xd <- collapseIDs(xd, ids, method)
+  }
+  features <- dim(xd)[1]
+  samples <- dim(xd)[2]
+  geneNames <- rownames(xd)
+  xd <- apply(xd, 2, as.numeric)
+  rownames(xd) <- geneNames
+  colnames(xd) <- sampleNames
+  
+  if(!is.na(designFile)){
+    x <- read.table(
+      designFile,
+      sep = "\t",
+      header = T,
+      row.names = 1,
+      fill = T,
+      stringsAsFactors = FALSE
+    )
+    xd <- xd[, sort.list(colnames(xd))]
+    xd <- xd[, colnames(xd) %in% rownames(x)]
+    x <- x[rownames(x) %in% colnames(xd), ]
+    x <- x[sort.list(rownames(x)), ]
+    classes <- as.data.frame(x)
+  }
+  
+  if(sum(apply(xd,2,is.na))>0 & impute){
+    library(impute)
+    allAnn <- dimnames(xd)
+    data.imputed <- impute.knn(as.matrix(xd))$data
+    xd <- data.imputed[1:features, ]
+    dimnames(xd) <- allAnn
+  }
+  return(
+    list(
+      xd = xd,
+      classes = classes,
+      nfeatures = features,
+      nsamples = samples,
+      fnames = geneNames,
+      snames = sampleNames
+    )
+  )
+}
+
+sspPredict <- function(
+  x, 
+  classes = "",
+  y, 
+  nGenes = "",
+  priors = "equal",
+  std = FALSE,
+  distm = "spearman",
+  centroids = T,
+  ncores = ncores) 
+{
+  dataMatrix <- x
+  features <- dim(x)[1]
+  samples <- dim(x)[2]
+  sampleNames <- dimnames(x)[[2]]
+  featureNames <- dimnames(x)[[1]]
+  
+  # parse the test file - same as train file but no rows of classes
+  tdataMatrix <- y
+  tfeatures <- dim(y)[1]
+  tsamples <- dim(y)[2]
+  tsampleNames <- dimnames(y)[[2]]
+  tfeatureNames <- dimnames(y)[[1]]
+  
+  #dimnames(tdataMatrix)[[2]]<-paste("x",seq(1,471))
+  temp <- overlapSets(dataMatrix, tdataMatrix)
+  dataMatrix <- temp$x
+  tdataMatrix <- temp$y
+  sfeatureNames <- row.names(dataMatrix)
+  
+  # standardize both sets
+  if (std) {
+    dataMatrix <- standardize(dataMatrix)
+    tdataMatrix <- standardize(tdataMatrix)
+  }
+  
+  if(!centroids){
+    thisClass <- as.vector(classes[, 1])
+    nClasses <- nlevels(as.factor(thisClass))
+    classLevels <- levels(as.factor(thisClass))
+    for (j in 1:nClasses) {
+      thisClass[thisClass == classLevels[j]] <- j
+    }
+    thisClass <- as.numeric(thisClass)
+    dataMatrix <- dataMatrix[, !(is.na(thisClass))]
+    thisClass <- thisClass[!(is.na(thisClass))]
+    scores <- apply(dataMatrix, 1, bwss, thisClass)
+    trainscores <- vector()	
+    for (j in 1:dim(dataMatrix)[1]) {
+      trainscores[j] <-
+        scores[[row.names(dataMatrix)[j]]]$bss / scores[[row.names(dataMatrix)[j]]]$wss
+    }
+    
+    dataMatrix <- dataMatrix[sort.list(trainscores, decreasing = TRUE), ]
+    tdataMatrix <- tdataMatrix[sort.list(trainscores, decreasing = TRUE), ]	
+    
+    if (nGenes == "") {
+      nGenes <- dim(dataMatrix)[1]
+    }
+    print(paste("Number of genes used:", nGenes))
+    dataMatrix <- dataMatrix[1:nGenes, ]
+    tdataMatrix <- tdataMatrix[1:nGenes, ]
+    centroids <- matrix(x, nrow = nGenes, ncol = nClasses)
+    for (j in 1:nClasses) {
+      centroids[, j] <- apply(dataMatrix[, thisClass == j], 1, mean)
+    }
+    dimnames(centroids) <- list(row.names(dataMatrix), NULL)
+    
+  }else{
+    nGenes <- dim(dataMatrix)[1]
+    print(paste("Number of genes used:", nGenes))
+    centroids <- dataMatrix
+    nClasses <- dim(centroids)[2]
+    classLevels <- dimnames(centroids)[[2]]
+  }
+  
+  distances <- matrix(ncol = nClasses, nrow = dim(tdataMatrix)[2])
+  # for(j in 1:nClasses){
+  #   if(distm=="euclidean"){
+  #     distances[,j]<-dist(t(cbind(centroids[,j],tdataMatrix)))[1:(dim(tdataMatrix)[2])]
+  #   }
+  #   if(distm=="correlation" | distm=="pearson"){
+  #     distances[,j]<-t(-1*cor(cbind(centroids[,j],tdataMatrix),use="pairwise.complete.obs"))[2:(dim(tdataMatrix)[2]+1)]
+  #   }
+  #   if(distm=="spearman"){
+  #     distances[,j]<-t(-1*cor(cbind(centroids[,j],tdataMatrix),method="spearman",use="pairwise.complete.obs"))[2:(dim(tdataMatrix)[2]+1)]
+  #   }
+  # }
+  
+  m <- parallel::mclapply(
+    1:nClasses,
+    function(j){
+      dist.m <- t(
+        -1*cor(cbind(centroids[,j],tdataMatrix),
+               method="spearman",
+               use = "pairwise.complete.obs"))[2:(dim(tdataMatrix)[2]+1)]
+    }, mc.cores = ncores)
+  for (j in 1:nClasses) distances[, j] <- m[[j]]
+  scores <- apply(distances, 1, min)
+  prediction <- vector(length = tsamples)
+  for (i in 1:tsamples) {
+    prediction[i] <- classLevels[match(scores[i], distances[i, ])]
+  }
+  names(prediction)<-tsampleNames
+  return(
+    list(
+      predictions = prediction,
+      testData = tdataMatrix,
+      distances = distances,
+      centroids = centroids
+    )
+  )
+}
+
+.pam50Classifier.erBalanced <- function(expr.data, sample.annot, pam50.genes, ncores){
+  index.er.neg <- sample.annot$er.status == 'negative'
+  index.er.pos <- sample.annot$er.status == 'positive'
+  er.negative.size <- sum(index.er.neg)
+  er.negative.samples <- sample.annot$Sample[index.er.neg]
+  er.positve.samples <- sample.annot$Sample[index.er.pos]
+  set.seed(3443)
+  er.postive.subSamples <- sample(er.positve.samples, er.negative.size)
+  er.balanced.samples <- c(er.postive.subSamples, er.negative.samples)
+  expr.data.pam50.erBalanced <- expr.data[pam50.genes , er.balanced.samples]
+  
+  calibration.parm <- rowMedians(as.matrix(expr.data.pam50.erBalanced))
+  expr.data.pam50 <- expr.data[pam50.genes , ]
+  expr.data.pam50 <- expr.data.pam50 - calibration.parm
+  pam50.classifier <- .pam50.classifier(
+    expr.data = expr.data.pam50,
+    tcga.calibration = FALSE,
+    ncores = ncores
+  )
+  pam50.classifier
+}
+```
+
+# Genefu PAM50 classifier
+```{r}
+load('pam50.rda')
+load('pam50.robust.rda')
+.pam50.geneFu <- function(expr.data, gene.annot){
+  row.names(expr.data)[row.names(expr.data) == 'NDC80'] <- 'KNTC2'
+  row.names(expr.data)[row.names(expr.data) == 'NUF2'] <- 'CDCA1'
+  row.names(expr.data)[row.names(expr.data) == 'ORC6'] <-'ORC6L'
+  # load('pam50.rda')
+  # load('pam50.robust.rda')
+  
+  # print(intersect(
+  #   row.names(expr.data),
+  #   row.names(pam50$centroids)
+  # ))
+  gene.annot$gene_name.[gene.annot$gene_name. == 'NDC80'] <-'KNTC2'
+  gene.annot$gene_name.[gene.annot$gene_name. == 'NUF2'] <-'CDCA1'
+  gene.annot$gene_name.[gene.annot$gene_name. == 'ORC6'] <-'ORC6L'
+  colnames(gene.annot)[28] <- 'EntrezGene.ID'
+  colnames(gene.annot)[9] <- 'probe'
+  genefu::molecular.subtyping(
+    sbt.model = "pam50",
+    data = t(expr.data),
+    annot = gene.annot,
+    do.mapping = TRUE)
+}
+```
+
+# Survival analysis
+```{r}
+# This function depends on the below libraries 
+#=================== Survival analysis =================
+# This function looks at the associations between different variables and survival outcome. These variables can be one of the below options that stratifies samples for survival analysis:
+
+# **expr** : expression of a gene, will be split based on 33%-tile and 66%-tile (e.g. low, medium, high)\n
+# **score** : score of a single signatre, will be split based on 33%-tile and 66%-tile (low, medium, high)\n
+# **covariate** : A continouse covariate (e.g. age), will be split based on 33%-tile and 66%-tile (low, medium, high)\n
+# **score_expr** : stratifies samples based on scores from a signature (high and low) and expression of a gene (high and low)\n
+# **covariate_expr** : startifies samples according to covariate (age; high and low) and expression of a gene (high and low)\n
+# **score_covariate** : stratifies samples according to scores from a single signature (high and low) and covariate (age; high and low)\n
+# **expr_expr** : stratifies samples according to expression of two genes (high gene1/high gene2, high gene1/low gene2, etc)\n
+# **score_score** : stratifies samples according to scores obtained from two signatures (high score1/high score2, high score1/low score2, etc)
+
+##---------------------- INPUT ARGUMENTS ------------------------
+
+# 1. **data**: a `SummarizedExperiment` object; for example, here we use the TCGA SKCL data that we downloaded using TCGAbiolink package (see above). This is a specific data object in R that stores expression data as well as several meta-data. Therefore, this function can not take a data frame as input at this stage. The `SummarizedExperiment` object needs to further have an `assay` slot called "logFPKM". There must be an "external_gene_name" column in the rowData that has gene names in the same format as the genes that we provide in the gene arguments of the function. To learn more about SummarizedExperiment object and how to construct it, please see https://bioconductor.org/packages/release/bioc/vignettes/SummarizedExperiment/inst/doc/SummarizedExperiment.html.
+# 2. **stratify**: A character value of one of the above listed options for stratification (e.g. "expr", "score_expr").
+# 3. **scores**: A data frame with maximum of three columns: one column needs to be called "sample" which has the sample names consistent with sample names in expression data (first argument of teh function), and minimum one or maximum two columns of signature scores, which have "score" as part of their column names. An error will be given if the data has more than two score columns. This argument can be `NULL` if you are not inetersted in the relationship between scores and survival outcome.
+# 4. **gene**: A character vector containing the names of maximum of two genes. This argument can be `NULL` if you are not inetersted in the relationship between genes and survival outcome.
+# 5. **covariate**: Name of the column for a covariate; This is the age factor by default. This argument can be `NULL` if you are not inetersted in the relationship between the covariate and survival outcome.
+# 6. **timeCol**: The name of time column to be used in the survival analysis
+# 7. **eventCol**: The name of the event column to be used in survival analysis (e.g. vital_status)
+# 8. **nGroup**: The number of groups for each stratification. Can be 2 or 3. For example, a value of 2 (default) generates two groups of samples with high and low expression for a desired gene/score/covariate, while 3 would stratify samples into three groups of high, low, and medium.
+# 9. **confInt**: Boolean; if TRUE, the confidence intervals of survival curves are plotted.
+## survival analysis
+## rnaseq_fpkm is a SummarizedExperiment object downloaded using TCGAbioLink package
+
+
+## YOU MAY NEED TO DO THIS FOR TCGA DATA bfeore running this function
+## As there are many NAs in the days_to_death column, we replace
+## the NAs with info from the days_to_last_follow_up
+
+#  timeSurvived <- colData(currentData)$days_to_death
+# colData(currentData)$finalTime <-
+#   ifelse(is.na(timeSurvived),
+#          colData(currentData)$days_to_last_follow_up,
+#          timeSurvived)
+# 
+# currentData <-
+#   currentData[, complete.cases(colData(currentData)$finalTime)]
+
+
+survival_plot <- function(data = exprData,
+                          stratify = "score_score",
+                          annot = newAnnot,
+                          scoreCol =  c("TRM TGFb IL2 Sel Com", "Mes (Byers)"),
+                          gene = c("ITGAE", "ZNF683"),
+                          covariate = "age_at_initial_pathologic_diagnosis",
+                          isCategoricalCov = FALSE,
+                          timeCol = "OS.time",
+                          eventCol = "OS",
+                          nGroup = 2,
+                          confInt = F, 
+                          mainTitle1,
+                          ylabel = "Survival",
+                          cols = c(brewer.pal(9, "Set1")[c(2, 3, 4, 5, 7, 8)],
+                                   brewer.pal(8, "Dark2")[c(8, 1, 4, 6)]), 
+                          nColLegend = 1,
+                          plotType = "autoplot") {
+  
+  annot[, timeCol] <- gsub("#N/A", NA, annot[, timeCol])
+  
+  comSamples <- intersect(rownames(annot), colnames(data))
+  data <- data[, comSamples]
+  annot <- annot[comSamples, ]
+  
+  
+  data <- data[, complete.cases(annot[, timeCol])]
+  annot <- annot[complete.cases(annot[, timeCol]),]
+  
+  annot[, timeCol] <- as.numeric(annot[, timeCol] )
+  
+  
+  ##---------------------------------------- Scores
+  if (!is.null(scoreCol)) {
+    
+    currentscoreCol <- scoreCol[1]
+    median_score <- median(annot[, currentscoreCol])
+    lowQ_score <- as.numeric(quantile(annot[, currentscoreCol], prob = 0.33))
+    upQ_score <- as.numeric(quantile(annot[, currentscoreCol], prob = 0.66))
+    
+    # annot$scores_2status <-
+    #   ifelse(
+    #     annot[, currentscoreCol] >= median_score,
+    #     paste("High ", currentscoreCol),
+    #     paste("Low ", currentscoreCol)
+    #   )
+    
+    annot$scores_2status[annot[, currentscoreCol] >= median_score] <- paste("High ", currentscoreCol)
+    annot$scores_2status[annot[, currentscoreCol] < median_score] <- paste("Low ", currentscoreCol)
+    
+    annot$scores_3status[annot[, currentscoreCol] >= upQ_score] <-
+      paste("High ", currentscoreCol)
+    annot$scores_3status[annot[, currentscoreCol] <= lowQ_score] <-
+      paste("Low ", currentscoreCol)
+    annot$scores_3status[annot[, currentscoreCol] < upQ_score &
+                           annot[, currentscoreCol] > lowQ_score] <-
+      paste("Medium ", currentscoreCol)
+    
+    
+    if (length(scoreCol) == 2) {
+      currentscoreCol <- scoreCol[2]
+      median_score <- median(annot[, currentscoreCol])
+      lowQ_score <-
+        quantile(annot[, currentscoreCol], prob = 0.33)
+      upQ_score <-
+        quantile(annot[, currentscoreCol], prob = 0.66)
+      
+      annot$scores2_2status <-
+        ifelse(
+          annot[, currentscoreCol] >= median_score,
+          paste("High ", currentscoreCol),
+          paste("Low ", currentscoreCol)
+        )
+      
+      annot$scores2_3status[annot[, currentscoreCol] >= upQ_score] <-
+        paste("High ", currentscoreCol)
+      annot$scores2_3status[annot[, currentscoreCol] <= lowQ_score] <-
+        paste("Low ", currentscoreCol)
+      annot$scores2_3status[annot[, currentscoreCol] < upQ_score &
+                              annot[, currentscoreCol] > lowQ_score] <-
+        paste("Medium ", currentscoreCol)
+    }
+    if (length(scoreCol) > 2) {
+      stop(paste0("You must specify maximum of 2 score columns at a time"))
+    }
+    ## save this new annotation data as sample annotation for the data
+    # colData(data) <- newAnnot
+  }
+  
+  ##-------------------------------------- Covariate
+  
+  if (!is.null(covariate)) {
+    
+    
+    annot <- annot[complete.cases(annot[, covariate]), ]
+    badcols <-
+      c(
+        "not reported",
+        "NA",
+        "Indeterminate",
+        "[Not Applicable]",
+        "[Not Available]",
+        "[Discrepancy]",
+        "[Unknown]",
+        "Not Evaluable"
+      )
+    annot <- annot[ ! annot[, covariate] %in% badcols, ]
+    
+    comSamples <- intersect(row.names(annot), colnames(data))
+    annot <- annot[comSamples, ]
+    data <- data[, comSamples]
+    
+    
+    # newAnnot <- colData(data)
+    if(isCategoricalCov){
+      annot[, covariate] <- as.factor(annot[, covariate])
+    }
+    else if(! isCategoricalCov) {
+      annot[, covariate] <- as.numeric(annot[, covariate])
+      median_cov <- median(annot[, covariate], na.rm = T)
+      lowQ_cov <-
+        as.numeric(quantile(annot[, covariate], prob = 0.33, na.rm = T))
+      upQ_cov <-
+        as.numeric(quantile(annot[, covariate], prob = 0.66, na.rm = T))
+      
+      annot$cov_2status <-
+        ifelse(annot[, covariate] >= median_cov,
+               "High covariate",
+               "Low covariate")
+      
+      annot$cov_3status[annot[, covariate] >= upQ_cov] <-
+        "High covariate"
+      annot$cov_3status[annot[, covariate] <= lowQ_cov] <-
+        "Low covariate"
+      annot$cov_3status[annot[, covariate] < upQ_cov &
+                          annot[, covariate] > lowQ_cov] <-
+        "Medium covariate"
+      
+    }
+  }
+  
+  
+  currentData <- data
+  
+  ##------------------------------------- Gene expression
+  
+  if (!is.null(gene)) {
+    if (sum(rownames(data) %in% gene) < 1) {
+      stop(paste0(gene, " does not present in the row names of the expression data"))
+    }
+    if (length(gene) > 3) {
+      stop(paste0("Please provide maximum of 3 genes at a time"))
+    }
+    
+    
+    currentGene <- gene[1]
+    currentGeneIndx <- which(rownames(currentData) == currentGene)
+    # newAnnot <- colData(currentData)
+    
+    ## calculate median and 33%-tile and 66%-tile of gene expression
+    
+    median_expr <- median(as.numeric(currentData[ currentGeneIndx, ]))
+    lowQ_expr <- as.numeric(quantile(currentData[ currentGeneIndx, ], prob = 0.33))
+    upQ_expr <- as.numeric(quantile(currentData[ currentGeneIndx, ], prob = 0.66))
+    
+    # annot$expr1_2status <-
+    #   ifelse(
+    #     currentData[ currentGeneIndx, ] >= median_expr,
+    #     paste0("High ", currentGene),
+    #     paste0("Low ", currentGene)
+    #   )
+    
+    annot$expr1_2status[currentData[ currentGeneIndx, ] >= median_expr] <- paste0("High ", currentGene)
+    annot$expr1_2status[currentData[ currentGeneIndx, ] < median_expr] <- paste0("Low ", currentGene)
+    
+    # annot$expr1_3status[as.numeric(currentData[ currentGeneIndx, ]) >= upQ_expr] <-
+    #   paste0("High ", currentGene)
+    
+    annot$expr1_3status[currentData[ currentGeneIndx, ] >= upQ_expr] <-
+      paste0("High ", currentGene)
+    
+    annot$expr1_3status[currentData[ currentGeneIndx, ] <= lowQ_expr] <-
+      paste0("Low ", currentGene)
+    annot$expr1_3status[currentData[ currentGeneIndx, ] < upQ_expr &
+                          currentData[ currentGeneIndx, ] > lowQ_expr] <-
+      paste0("Medium ", currentGene)
+    
+    ## save this new annotation as sample annotation for the data
+    # colData(currentData) <- newAnnot
+    
+    if (length(gene) > 1) {
+      currentGene <- gene[2]
+      # newAnnot <- colData(currentData)
+      currentGeneIndx <- which(rownames(currentData) == currentGene)
+      
+      ## calculate median and 33%-tile and 66%-tile of gene expression
+      median_expr <-
+        median(currentData[currentGeneIndx, ])
+      lowQ_expr <-
+        as.numeric(quantile(currentData[currentGeneIndx, ], prob = 0.33))
+      upQ_expr <-
+        as.numeric(quantile(currentData[currentGeneIndx, ], prob = 0.66))
+      
+      annot$expr2_2status <-
+        ifelse(
+          currentData[currentGeneIndx, ] >= median_expr,
+          paste0("High ", currentGene),
+          paste0("Low ", currentGene)
+        )
+      
+      annot$expr2_3status[currentData[currentGeneIndx, ] >= upQ_expr] <-
+        paste0("High ", currentGene)
+      annot$expr2_3status[currentData[currentGeneIndx, ] <= lowQ_expr] <-
+        paste0("Low ", currentGene)
+      annot$expr2_3status[currentData[currentGeneIndx, ] < upQ_expr &
+                            currentData[currentGeneIndx, ] > lowQ_expr] <-
+        paste0("Medium ", currentGene)
+      
+      if (length(gene) == 3) {
+        currentGene <- gene[3]
+        currentGeneIndx <- which(rownames(currentData) == currentGene)
+        
+        ## calculate median and 33%-tile and 66%-tile of gene expression
+        median_expr <-
+          median(currentData[currentGeneIndx, ])
+        lowQ_expr <-
+          as.numeric(quantile(currentData[currentGeneIndx, ], prob = 0.33))
+        upQ_expr <-
+          as.numeric(quantile(currentData[currentGeneIndx, ], prob = 0.66))
+        
+        annot$expr3_2status <-
+          ifelse(
+            currentData[currentGeneIndx, ] >= median_expr,
+            paste0("High ", currentGene),
+            paste0("Low ", currentGene)
+          )
+        
+        annot$expr3_3status[currentData[currentGeneIndx, ] >= upQ_expr] <-
+          paste0("High ", currentGene)
+        annot$expr3_3status[currentData[currentGeneIndx, ] <= lowQ_expr] <-
+          paste0("Low ", currentGene)
+        annot$expr3_3status[currentData[currentGeneIndx, ] < upQ_expr &
+                              currentData[currentGeneIndx, ] > lowQ_expr] <-
+          paste0("Medium ", currentGene)
+        
+      }
+    }
+    
+    # colData(currentData) <- newAnnot
+  }
+  
+  # currentData <-
+  #   currentData[, complete.cases(annot[, timeCol])]
+  
+  
+  ##------------------------------------- Check for stratification type
+  if (stratify == "expr") {
+    currentStrata <- paste0("expr1_", nGroup, "status")
+    mainTitle <- gene[1]
+  }
+  if(stratify == "score"){
+    currentStrata <- paste0("scores_", nGroup, "status")
+    mainTitle <- scoreCol[1]
+  }
+  if(stratify == "covariate"){
+    if(isCategoricalCov){
+      currentStrata <- covariate
+    }
+    else if(!isCategoricalCov){
+      currentStrata <- paste0("cov_", nGroup, "status")
+    }
+    mainTitle <- covariate
+  }
+  if (stratify == "score_expr") {
+    currentSt_score <- paste0("scores_", nGroup, "status")
+    currentSt_expr  <- paste0("expr1_", nGroup, "status")
+    annot$score_expr <-
+      paste0(annot[, currentSt_score],
+             " / ",
+             annot[, currentSt_expr])
+    currentStrata <- "score_expr"
+    mainTitle <- paste(scoreCol[1], " &\n", gene[1])
+  }
+  if (stratify == "covariate_expr") {
+    if(is.null(covariate) | is.null(gene)){
+      stop("Make sure both covriate and gene are provided")
+    }
+    
+    if(isCategoricalCov){
+      currentSt_cov <- covariate
+    } else if(!isCategoricalCov){
+      currentSt_cov   <- paste0("cov_", nGroup, "status")
+    }
+    
+    #currentSt_cov  <- paste0("cov_", nGroup, "status")
+    currentSt_expr <- paste0("expr1_", nGroup, "status")
+    ## Remove samples with NA annotation as covariate:
+    currentData <- currentData[ , complete.cases(annot[, currentSt_cov])]
+    annot$cov_expr <-
+      paste0(annot[, currentSt_cov],
+             " / ",
+             annot[, currentSt_expr])
+    currentStrata <- "cov_expr"
+    mainTitle <- paste(covariate, " &\n", gene[1])
+  }
+  if (stratify == "score_covariate") {
+    
+    if(isCategoricalCov){
+      currentSt_cov <- covariate
+    } else if(!isCategoricalCov){
+      currentSt_cov   <- paste0("cov_", nGroup, "status")
+    }
+    
+    currentSt_score <- paste0("scores_", nGroup, "status")
+    
+    annot$score_cov <-
+      paste0(annot[, currentSt_score],
+             " / ",
+             annot[, currentSt_cov])
+    currentStrata <- "score_cov"
+    mainTitle <- paste(scoreCol[1], " &\n", covariate)
+  }
+  if (stratify == "expr_expr") {
+    currentSt_expr1 <- paste0("expr1_", nGroup, "status")
+    currentSt_expr2 <- paste0("expr2_", nGroup, "status")
+    annot$expr_expr <-
+      paste0(annot[, currentSt_expr1],
+             " / ",
+             annot[, currentSt_expr2])
+    currentStrata <- "expr_expr"
+    mainTitle <- paste(gene[1], " &\n", gene[2])
+  }
+  if (stratify == "score_score") {
+    currentSt_score1 <- paste0("scores_", nGroup, "status")
+    currentSt_score2 <- paste0("scores2_", nGroup, "status")
+    annot$score_score <-
+      paste0(
+        annot[, currentSt_score1],
+        " / ",
+        annot[, currentSt_score2])
+    currentStrata <- "score_score"
+    mainTitle <- paste(scoreCol[1], " &\n", scoreCol[2])
+  }
+  
+  if (stratify == "expr_expr_expr") {
+    currentSt_expr1 <- paste0("expr1_", nGroup, "status")
+    currentSt_expr2 <- paste0("expr2_", nGroup, "status")
+    currentSt_expr3 <- paste0("expr3_", nGroup, "status")
+    annot$expr_expr_expr <-
+      paste0(annot[, currentSt_expr1],
+             " / ",
+             annot[, currentSt_expr2],
+             " / ",
+             annot[, currentSt_expr3])
+    currentStrata <- "expr_expr_expr"
+    mainTitle <- paste(gene[1], " &\n", gene[2], " & ", gene[3])
+  }
+  
+  
+  ##----------------------------- Fit survival model
+  # annot2 <- annot
+  # annot2[, timeCol] <- gsub("#N/A", NA, annot2[, timeCol])
+  # annot2 <- annot2[complete.cases(annot2[, timeCol]), ]
+  
+  
+  tt <- data.frame(table(annot[, currentStrata]))
+  tt$Var1 <- as.character(tt$Var1)
+  tt$Freq <- as.character(tt$Freq)
+  
+  
+  for (i in 1:nrow(tt)) {
+    annot$currentStrata_n[annot[, currentStrata] == tt$Var1[i]] <-
+      paste0(tt$Var1[i], " (", tt$Freq[i], ")")
+  }
+  
+  annot <- annot[, c("currentStrata_n", timeCol, eventCol)]
+  
+  
+  annot[, timeCol] <- as.numeric(annot[, timeCol])
+  annot[, eventCol] <- as.numeric(annot[, eventCol])
+  
+  fitValues <- survfit(Surv(time = annot[, timeCol],
+                            event = annot[, eventCol]) ~
+                         annot$currentStrata_n)
+  
+  ss <- survdiff(Surv(time =  annot[, timeCol],
+                      event = annot[, eventCol]
+  ) ~
+    annot$currentStrata_n)
+  # 
+  #   ss <- survdiff(Surv(annot[, timeCol],
+  #                       as.numeric(as.factor(
+  #                         annot[, eventCol]
+  #                       )) - 1) ~
+  #                    annot$currentStrata_n)
+  
+  ##------------------------------- Calculate p-value
+  ## This does not adjust for any covariates, unless the covariate option is included
+  
+  pval <-  ifelse (is.na(ss), next, (round(1 - pchisq(
+    ss$chisq, length(ss$n) - 1
+  ), 6)))[[1]]
+  
+  if(pval < 0.01){
+    pval_add <- paste0("p-value (log-rank) < 0.01")
+  }
+  else{
+    pval_add <- paste0("p-value (log-rank) = ", round(pval, 2))
+  }
+  
+  
+  ##------------------------------ Plot survival curve
+  
+  if(plotType == "autoplot"){
+    p <-  autoplot(fitValues, surv.size = 1.5, conf.int = confInt) +
+      scale_color_manual(values = cols) +
+      scale_fill_manual(values = cols) +
+      ggtitle(paste0(
+        mainTitle1, '\n' , 
+        # " (Chisq = ", round(ss$chisq, 3),
+        #"\n", 
+        pval_add)) +
+      ylab(ylabel) +
+      xlab("Time (days)") +
+      theme(
+        panel.background = element_blank(),
+        legend.position = 'bottom'
+        
+        ) +
+      guides(
+        color = guide_legend(ncol = nColLegend), 
+             fill = guide_legend(ncol = nColLegend))
+    
+  }
+  else if (plotType == "ggsurvplot"){
+    p <- ggsurvplot (
+      fitValues,
+      data = annot,
+      fun = "pct",
+      pval = TRUE,
+      # pval.method = TRUE,  ## Log Rank
+      # test.for.trend = T,  ## when we have more than two groups
+      conf.int = confInt,
+      surv.median.line = "hv",
+      # linetype = "strata",
+      palette = cols,
+      xlab = "Time",
+      legend.title = mainTitle,
+      # legend.labs = c("High score", "Low score"),
+      legend = c(.2, .2),
+      # break.time.by = 4,
+      # risk.table = TRUE,
+      # tables.height = 0.2,
+      # tables.theme = theme_cleantable(),
+      # risk.table.y.text.col = TRUE,
+      # risk.table.y.text = TRUE
+    )
+  }
+  p_pval <- list(plot = p, pval = pval)
+  return(p_pval)
+  
+}
+
+```
+
+# RUV-III normalization
+
+```{r}
+# Removing Unwanted Variation - III (RUV-III)
+## Y raw gene expression matrix (samples by genes)
+## M replicate matrix
+## ctl negative control genes
+## k the number of unwanted factors to use. 
+RUV_III_PRPS <- function(
+  Y,
+  M,
+  ctl,
+  k = NULL, 
+  eta = NULL, 
+  include.intercept = TRUE,
+  average = FALSE, 
+  fullalpha = NULL, 
+  return.info = FALSE, 
+  inputcheck = TRUE) 
+{
+  if (is.data.frame(Y) ) {
+    Y <- data.matrix(Y)
+  }
+  m <- nrow(Y)
+  n <- ncol(Y)
+  M <- ruv::replicate.matrix(M)
+  ctl <- tological(ctl, n)
+  if (inputcheck) {
+    if (m > n)
+      warning(
+        "m is greater than n!  This is not a problem itself, but may 
+              indicate that you need to transpose your data matrix.  
+              Please ensure that rows correspond to observations 
+              (e.g. RNA-Seq assay) and columns correspond to features (e.g. genes).")
+    if (sum(is.na(Y)) > 0)
+      warning("Y contains missing values.  This is not supported.")
+    if (sum(Y == Inf, na.rm = TRUE) + sum(Y == -Inf, na.rm = TRUE) >
+        0)
+      warning("Y contains infinities.  This is not supported.")
+  }
+  Y <- ruv::RUV1(Y, eta, ctl, include.intercept = include.intercept)
+  mu <- colMeans(Y)
+  mu_mat <- rep(1, m) %*% t(mu)
+  Y_stand <- Y - mu_mat
+  if (ncol(M) >= m)
+    newY <- Y
+  else if (is.null(k)) {
+    ycyctinv <- solve(Y[, ctl] %*% t(Y[, ctl]))
+    newY <- (M %*% solve(t(M) %*% ycyctinv %*% M) %*% (t(M) %*% ycyctinv)) %*% Y
+    fullalpha <- NULL
+  } else if (k == 0) {
+    newY <- Y
+    fullalpha <- NULL
+  } else {
+    if (is.null(fullalpha) ) {
+      Y0 <- ruv::residop(Y, M)
+      fullalpha <- t(svd(Y0 %*% t(Y0))$u[, 1:min(m - ncol(M), sum(ctl)), drop = FALSE]) %*% Y
+    }
+    alpha <- fullalpha[1:min(k, nrow(fullalpha)), , drop = FALSE]
+    ac <- alpha[, ctl, drop = FALSE]
+    W <- Y_stand[, ctl] %*% t(ac) %*% solve(ac %*% t(ac))
+    newY <- Y - W %*% alpha
+  }
+  if (average)
+    newY <- ((1/apply(M, 2, sum)) * t(M)) %*% newY
+  if (!return.info) {
+    return(newY)
+  } else {
+    return(list(newY = newY, M = M, fullalpha = fullalpha,  W =  W))
+  }
+}
+
+tological <- function(ctl, n) {
+  ctl2 <- rep(FALSE, n)
+  ctl2[ctl] <- TRUE
+  return(ctl2)
+}
+
+```
+
+
+
+# PRPS
+```{r}
+.CreatePseudoSamplesForLsPurityBatch <- function(
+  expr.data,
+  sample.info,
+  librarySize,
+  biology,
+  batch,
+  purity,
+  include.ls = FALSE,
+  include.purity = FALSE,
+  minSamplesPerBatchPS = 3,
+  minSamplesForPurityPerBiology = 12,
+  minSamplesForPurityPS = 3,
+  minSamplesForLibrarySizePerBatch = 10,
+  minSamplesForLibrarySizePS = 3
+){
+  ### checl
+  if(include.purity & minSamplesForPurityPS > minSamplesForPurityPerBiology){
+    stop('error: minSamplesForPurityPS can not be smaller than minSamplesForPurityPerBiology')
+  } else if(include.purity & minSamplesForPurityPerBiology < 2*minSamplesForPurityPS){
+    stop('error: minSamplesForPurityPerBiology should be at least two times larger than minSamplesForPurityPS')
+  } else if(include.ls & minSamplesForLibrarySizePS > minSamplesForLibrarySizePerBatch) {
+    stop('error: minSamplesForLibrarySizePerBatch can not be smaller than minSamplesForLibrarySizePS')
+  } else if(include.ls & minSamplesForLibrarySizePerBatch < 2*minSamplesForLibrarySizePS ){
+    stop('error: minSamplesForLibrarySizePerBatch should be at least two times larger than minSamplesForLibrarySizePS')
+  }
+  ### Biology
+  row.names(sample.info) <- colnames(expr.data)
+  sample.info$biology <- apply(
+    sample.info[ , biology, drop = FALSE],
+    1,
+    paste,
+    collapse = "-"
+  )
+  ### Biology - Batch
+  sample.info$biology.batch <- apply(
+    sample.info[, c(biology, batch)],
+    1,
+    paste,
+    collapse = "_"
+  )
+  ### removing batch effects
+  # create PS per biology/batch
+  selected.biology.ps.batch <- unlist(lapply(
+    unique(sample.info$biology), 
+    function(x){
+      index <- sample.info$biology == x
+      if(sum( table(sample.info$biology.batch[index] ) >= minSamplesPerBatchPS) > 1 ){
+        x
+      }
+    }))
+  if(length(selected.biology.ps.batch) > 0){
+    message('PRPS are generated for batch effects')
+  }else{
+    message('error: there are not enough samples to create 
+            pseudo-samples for batch effects removal, you may want to lower minSamplesPerBatchPS')
+  }
+  sample.info.ps.batch <- sample.info[sample.info$biology %in% selected.biology.ps.batch , ]
+  expr.data.ps.batch <- expr.data[, row.names(sample.info.ps.batch)]
+  ### sort samples
+  selected.batches <- names(which(table(sample.info.ps.batch$biology.batch) >= minSamplesPerBatchPS))
+  ps.batch <- sapply(
+    selected.batches,
+    function(x) {
+      index <- sample.info.ps.batch$biology.batch == x
+      Matrix::rowMeans(expr.data.ps.batch[, index])
+    })
+  
+  if(include.ls){
+    selected.batches.ls <- names(
+      which(table(sample.info$biology.batch) >= minSamplesForLibrarySizePerBatch)
+    )
+    if(length(selected.batches.ls) > 0){
+      message('PRPS are generated for library size effects')
+      sample.info <- sample.info[
+        with(sample.info,
+             order(sample.info[, 'biology.batch'],
+                   sample.info[, librarySize])), ]
+      expr.data <- expr.data[, row.names(sample.info)]
+      ps.ls <- lapply(
+        selected.batches.ls, 
+        function(x){
+          index <- sample.info$biology.batch == x
+          ls.data <- expr.data[ , index]
+          low.ls <- Matrix::rowMeans(ls.data[ , 1:minSamplesForLibrarySizePS])
+          high.ls <- Matrix::rowMeans(ls.data[ , c(ncol(ls.data)-(minSamplesForLibrarySizePS - 1)):ncol(ls.data) ])
+          all.ls <- cbind(low.ls, high.ls)
+          colnames(all.ls) <- rep(paste(x, 'LS', sep = '_'), 2)
+          all.ls
+        })
+      ps.ls <- do.call(cbind, ps.ls)
+      
+    }else{
+      message('error: there are not enough samples to create pseudo-samples for 
+              removal of library size effects, you may want to lower minSamplesForLibrarySizePerBatch')
+    }
+  }else if (! include.ls){
+    print('PRPS is not generated for librray size effects')
+    ps.ls = list()
+  }
+  if(include.purity ){
+    selected.biology.purity <- names(
+      which(table(sample.info$biology) >= minSamplesForPurityPerBiology)
+    ) 
+    if(length(selected.biology.purity) > 0){
+      message('PRPS are generated for purity effects')
+      sample.info <- sample.info[
+        with(sample.info,
+             order(sample.info[, 'biology'],
+                   sample.info[, purity])), ]
+      expr.data <- expr.data[, row.names(sample.info)]
+      ps.purity <- lapply(
+        selected.biology.purity,
+        function(x) {
+          index <- sample.info$biology == x
+          purity.data <- expr.data[, index]
+          low.pur <- Matrix::rowMeans(purity.data[, 1:minSamplesForPurityPS])
+          high.pur <- Matrix::rowMeans(purity.data[, c(ncol(purity.data) - (minSamplesForPurityPS - 1)):ncol(purity.data)])
+          all.purity <- cbind(low.pur, high.pur)
+          colnames(all.purity) <- rep(paste(x, 'purity', sep = '_'), 2)
+          all.purity
+        })
+      ps.purity <- do.call(cbind, ps.purity)
+    }else{
+      message('error: there are not enough samples to make pseudo-samples 
+              for purity variation, you may want to lower minSamplesForPurityPerBiology')
+    }
+  } else if (!include.purity){
+    print('PRPS is not generated for purity effects')
+    ps.purity = list()
+  }
+  return(list(ps.batch = ps.batch, ps.ls = ps.ls, ps.purity = ps.purity))
+}
+```
+
+# Selected colors
+```{r}
+# Colors
+## Pan cancer
+### time (year)
+years.colors <- c(
+  'green',
+  'purple4',
+  'blue',
+  'brown',
+  'tan1',
+  'darkgreen',
+  'black'
+  )
+names(years.colors) <- c(
+  '2009',
+  '2010',
+  '2011',
+  '2012',
+  '2013',
+  '2014',
+  '2015'
+  )
+```
+
+## datasets
+
+```{r}
+### Data sets
+dataSets.colors <- wesanderson::wes_palette(
+  n = 4, 
+  name = "GrandBudapest1")[c(1,2,4,3)]
+names(dataSets.colors) <- c(
+  'Raw counts',
+  'FPKM',
+  'FPKM.UQ',
+  'RUV-III'
+  )
+```
+
+## library size and purity
+
+```{r}
+### Library size and purity
+LsPurity.colors <- c(
+  'darkorange4',
+  'gold4'
+  )
+names(LsPurity.colors) <- c(
+  'LibrarySize', 
+  'Purity'
+  )
+```
+
+## Purity color
+
+```{r}
+purity.colors = viridis::plasma(n = 10)
+```
+
+## TCGA READ and COAD
+### major time intervals
+
+```{r}
+major.times.colors <- c('turquoise4', 'yellow4')
+names(major.times.colors) <- c('2010', '2011:2014')
+```
+
+### cms
+
+```{r}
+cms.colors <- c(
+  'orange',
+  'royalblue2',
+  'plum2',
+  'seagreen3',
+  'gray70',
+  '#D9D9D9'
+  ) 
+names(cms.colors) <- c(
+  'CMS1', 
+  'CMS2', 
+  'CMS3', 
+  'CMS4',
+  'Not classified',
+  'Adjacent normal'
+  )
+```
+
+### msi
+
+```{r}
+### MSI color
+msi.colors <- c(
+  'purple3', 
+  'hotpink2', 
+  'yellow2', 
+  'gray70', 
+  'red'
+  )
+names(msi.colors) <- c(
+  "MSS" ,
+  "MSI-L",
+  "MSI-H",
+  "Indeterminate",
+  "Adjacent normal"
+  )
+```
+
+## TCGA BRCA
+### chemistries
+
+```{r}
+library("viridis")
+FcCh.colors <- c('#440154FF', 'yellow 3')
+names(FcCh.colors) <- c(
+  '2010:2011', 
+  '2012:2014'
+  )
+```
+
+### pam50
+
+```{r }
+
+### PAM50 colors
+pam50.colors <- c(
+  'gray',
+  'red',
+  'darkgreen',
+  'navy',
+  'cyan3', 
+  'darkorange'
+  ) 
+names(pam50.colors) <- c(
+  "Adjacent normal", 
+  "Basal",
+  "Her2",
+  "LumA",
+  "LumB", 
+  "Normal like"
+  )
+```
+
+### sub-batch colors
+
+```{r}
+sub.batches.color <- c(
+  'darkgreen', 
+  'navy', 
+  'tomato', 
+  'plum',
+  'black'
+  )
+names(sub.batches.color) <- c(
+  'group1', 
+  'group2', 
+  'group3', 
+  'group4', 
+  'group5'
+  )
+```
+
+### currentCols
+
+```{r}
+currentCols <-  c(
+  RColorBrewer::brewer.pal(8, "Dark2")[-5],
+  RColorBrewer::brewer.pal(10, "Paired"),
+  RColorBrewer::brewer.pal(12, "Set3"),
+  RColorBrewer::brewer.pal(9, "Blues")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "Oranges")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "Greens")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "Purples")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "Reds")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "Greys")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "BuGn")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "PuRd")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "BuPu")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(9, "YlGn")[c(8, 3, 7, 4, 6, 9, 5)],
+  RColorBrewer::brewer.pal(10, "Paired")
+  )
+
+```
+
+
+

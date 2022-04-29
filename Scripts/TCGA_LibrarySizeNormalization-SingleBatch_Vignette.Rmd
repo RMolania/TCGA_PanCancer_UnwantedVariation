@@ -1,0 +1,497 @@
+---
+title: "Library size normalization in TCGA RNA-Seq data"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "15-02-2020"
+output:
+  rmdformats::readthedown:
+    code_folding: hide
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date())
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style>
+body {text-align: justify}
+</style>
+
+```{r knitr_init, echo=FALSE, results="asis"}
+library(knitr)
+library(rmdformats)
+library(DT)
+library(BiocStyle)
+# options(max.print = "75")
+# opts_chunk$set(
+#   comment = FALSE,
+#   message = FALSE,
+#   warning = FALSE)
+# opts_knit$set(width = 65)
+```
+
+```{r setup, include=F}
+knitr::opts_chunk$set(
+  tidy = FALSE,
+  fig.width = 10,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+
+# Introduction
+Most RNA-seq normalizations adjust for library size variation using global scaling factors calculated based on either total counts or other statistical features of the raw count data, such as their upper-quartiles. These normalization simply divide all gene counts in each sample by a single scale factor. The implicit assumption underlying such methods is that all the gene-level counts are proportional to the scale factors and that it should be adequate to adjust them for library size in this way across samples.\
+According to our recent work[(R.Molania, bioRxiv, 2021)](https://www.biorxiv.org/content/10.1101/2021.11.01.466731v1.article-metrics) there are situations where the counts for a reasonable proportion of genes cannot be properly adjusted for library size by the use of a single scale factor, regardless of how it is computed, which presents a challenge for current RNA-seq normalizations. The bias between gene-level counts and library size has been discussed in scRNA-seq data, however this has not been fully recognized in RNA-seq data.\
+here, we use two TCGA RNA-Seq data, uveal melanoma (UVM) and kidney chromophobe (KICH) RNA-seq data to assess the performance of current library size normalizations. Samples of these datasets were profiled using a single plate.
+
+
+# Data prepration
+The Summarized experiment objects of the TCGA UVM and KICH can be found here...
+
+# The TCGA UVM RNA-Seq data
+The TCGA UVM RNA-Seq data contains of 80 samples.
+
+```{r LoadUvmData, message=F, warning=F, error=F}
+source('Libraries_HelperFunctions_ForVignette.R')
+uvm.se <- readRDS('../TCGA_SummarizedExperiment_HTseq_UVM.rds') #  56493 80 
+
+# source('Scripts/Libraries_HelperFunctions_ForVignette.R')
+# uvm.se <- readRDS('TCGA_SummarizedExperiment_HTseq_UVM.rds') #  56493 80 
+```
+
+## Removing genes
+Genes with at least 15 raw counts in at least 10% of cancer samples are retained for down-stream analyses. This detail is saved in the "keep.cancer" column of the gene annotation file in the SummarizedExperiment object. We also keep only protein coding genes. This detail can be found in the "gene_type" column of the gene annotation file.This is a arbitrary filtering, any gene_type of interest can be retained in the data.
+```{r removLowExprGeneUvm, message=F, warning=F, error=F}
+keep.genes <- SummarizedExperiment::rowData(uvm.se)$keep.cancer == 'yes' |
+  as.data.frame(SummarizedExperiment::rowData(uvm.se))$gene_type == 'protein.coding '
+uvm.se <- uvm.se[keep.genes , ]
+uvm.se$LibSize <- log2(colSums(
+    SummarizedExperiment::assay(uvm.se, 'HTseq_counts'))
+  )
+```
+
+## Count Per Million (CPM) normalization 
+We also perform CPM normalization to assess its performance in additions to the TCGA FPKM and FPKM.UQ normalizations.
+```{r CpmUvm, message=F, warning=F, error=F}
+cpm.data <- edgeR::cpm(
+  y = as.matrix(
+    SummarizedExperiment::assay(
+      uvm.se, 
+      'HTseq_counts'))
+  )
+```
+
+here, we add the CPM data to the SummarizedExperiment object. 
+
+```{r seUvm, message=F, warning=F, error=F}
+SummarizedExperiment::assay(uvm.se, 'CPM') <- cpm.data
+row.names(uvm.se) <- SummarizedExperiment::rowData(uvm.se)$hgnc_symbol_BioMart
+```
+
+## Spearman correlations between library size and gene expression
+Ideally, normalized gene expression values should have no significant association with library size in RNA-seq data. The relationship between individual normalized gene expression measurements and library size are assessed using Spearman correlation.\
+Figure \@ref(fig:corrLsGeneUvm) show Spearman correlation coefficients between individual gene expression and log2 of library size in differently normalized TCGA UVM data. The normalizations reduced the effects of library size, but they showed shortcomings: there are remarkable number of genes that they lave postie and negative correlations with library size in the normalized datasets. 
+
+```{r corrLsGeneUvm, message=F, warning=F, error=F, fig.dim=c(8,8), fig.cap='scatter plots show Spearman correlation coefficients between individual gene expression and log2 of library size in differently normalized TCGA UVM data'}
+normalizations <- names(
+  SummarizedExperiment::assays(uvm.se)
+  )
+corr.geneLs <- lapply(
+  normalizations,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(uvm.se, x)),
+      is.log = FALSE,
+      variable = uvm.se$LibSize,
+      method = 'spearman',
+      n.cores = 5,
+      group = 'ls'
+      )$ls_rho
+    })
+corr.geneLs.df <- do.call(cbind, corr.geneLs)
+colnames(corr.geneLs.df) <- c(
+  'Raw counts', 
+  'FPKM', 
+  'FPKM.UQ', 
+  'CPM'
+  )
+GGally::ggpairs(
+  corr.geneLs.df,
+  lower = list(continuous = GGally::wrap(upperfun)),
+  upper = NULL,
+  diag = NULL,
+  showStrips = TRUE,
+  switch = 'both'
+  ) +
+  theme(
+    strip.text.x = element_text(size = 15),
+    strip.text.y = element_text(size = 15),
+    )
+```
+
+## Sevral examples
+
+Figure \@ref(fig:corrLsGeneUvmExamples) show the relationships between several genes and library size in the TCGA UVM RNA-Seq data that are normalized by different methods.
+
+```{r corrLsGeneUvmExamples, message=F, warning=F, error=F, fig.dim=c(8,12), fig.cap='Relationship of several gene expression with library size in differently normalized TCGA UVM RNA-seq data'}
+selected.genes <- c(
+  'RPL18', 
+  'ESS2', 
+  'ASB8', 
+  'DAZAP1'
+  ) 
+pp <- lapply(
+  selected.genes,
+  function(i){
+      df <- data.frame(
+    Raw.counts = log2(unlist(SummarizedExperiment::assay(
+      uvm.se, 'HTseq_counts'))[i, ] +1),
+    FPKM = log2(unlist(SummarizedExperiment::assay(
+      uvm.se, 'HTseq_FPKM'))[i , ] +1),
+    FPKM.UQ = log2(unlist(SummarizedExperiment::assay(
+      uvm.se, 'HTseq_FPKM.UQ'))[i , ] +1),
+    CPM = log2(unlist(SummarizedExperiment::assay(
+      uvm.se, 'CPM'))[i , ] +1),
+    LibSize = uvm.se$LibSize
+  ) %>%
+  tidyr::pivot_longer(
+    -LibSize,
+    names_to = 'datasets',
+    values_to = 'expr') %>%
+    dplyr::mutate(datasets = replace(
+      datasets, grep(
+        'Raw.counts', datasets), 'Raw counts')) %>%
+    dplyr::mutate(datasets = factor(datasets,  levels = c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'CPM')) ) %>%
+  as.data.frame(.)
+  p <- ggplot(df, aes(x = LibSize, y = expr)) +
+    geom_point(size = 1) +
+    ylab(expression(Log[2] ~ 'gene expression'))  +
+    xlab(expression(Log[2] ~ 'library size')) +
+    facet_wrap( ~ datasets, scale = 'free', ncol = 4) +
+    ggtitle(i) +
+    ggpubr::stat_cor(
+      aes(label = ..r.label..),
+      label.x.npc = .01,
+      label.y.npc = .9,
+      method = 'spearman',
+      hjust = 0,
+      size = 6,
+      r.digits = .1,
+      col = 'red',
+      cor.coef.name = "rho"
+    ) +
+    geom_smooth(
+      method = 'lm',
+      formula = y ~ x,
+      col = 'red',
+      se = T ) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1),
+      plot.title = element_text(size = 14),
+      axis.title.x = element_text(size = 12),
+      axis.title.y = element_text(size = 12),
+      axis.text.x = element_text(size = 8),
+      axis.text.y = element_text(size = 8),
+      legend.text = element_text(size = 10),
+      legend.title = element_text(size = 14),
+      strip.text.x = element_text(size = 13),
+      legend.position = 'none'
+    )  
+  p
+
+  })
+do.call(
+  gridExtra::grid.arrange,
+  c(pp,
+    ncol = 1)
+  )
+```
+
+Bar plots show the number of genes that show high positive and negative correlations with library size in the TCGA UVM RNA-seq data normalized by different methods
+
+```{r  BarDiffUvm,message=F, warning=F, error=F, fig.dim=c(8,5), fig.cap='Bar plots show the number of genes that show high positive and negative correlations with library size in the TCGA UVM RNA-seq data normalized by different methods'}
+# selected genes
+ls.gene <- as.data.frame(apply(
+  corr.geneLs.df, 
+  2, 
+  function(x) {
+  c(length(which(x > .3)), length(which(x < -.3)))}
+  ))
+colnames(ls.gene) <- c(
+  'Raw counts', 
+  'FPKM', 
+  'FPKM.UQ', 
+  'CPM'
+  )
+ls.gene$dir <- c('High', 'Low')
+ls.gene <- ls.gene %>% 
+  tidyr::pivot_longer(
+    -dir, 
+    values_to = 'no', 
+    names_to = 'Datasets') %>% 
+  dplyr::mutate(Datasets = factor(
+    Datasets, 
+    levels = c(
+      'Raw counts', 
+      'FPKM', 
+      'FPKM.UQ', 
+      'CPM'))) %>% 
+  data.frame(.)
+ggplot(ls.gene, aes(x = Datasets, y = no, group = dir, fill = dir)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(
+    labels = c("> 0.3", " < - 0.3"), 
+    values = c("darkgreen", "navy"), 
+    name = 'Spearman correlation') +
+  ylab('count') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 18),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    legend.text = element_text(size = 25),
+    strip.text = element_text(size = 15),
+    legend.title=element_text(size = 20),
+    plot.title = element_text(size = 25),
+  )
+```
+
+# The TCGA KICH RNA-Seq data
+The TCGA UVM RNA-Seq data contains of 80 samples.
+
+```{r}
+kich.se <- readRDS('../TCGA_SummarizedExperiment_HTseq_KICH.rds') #  56493 80 
+```
+
+## Removing lowly expressed genes
+Genes with at least 15 raw counts in at least 10% of cancer samples are retained for down-stream analyses. These details are saved in the "keep.cancer" and 'keep.normal' columns of the gene annotation file in the SummarizedExperiment object. We also keep only protein coding genes. This detail can be found in the "gene_type" column of the gene annotation file.This is a arbitrary filtering, any gene_type of interest can be retained in the data.
+```{r LoadKichData, message=F, warning=F, error=F}
+keep.genes <- SummarizedExperiment::rowData(kich.se)$keep.cancer == 'yes' |
+  as.data.frame(SummarizedExperiment::rowData(kich.se))$gene_type == 'protein.coding '
+kich.se <- kich.se[keep.genes , ]
+kich.se$LibSize <- log2(colSums(
+    SummarizedExperiment::assay(kich.se, 'HTseq_counts'))
+  )
+```
+
+## Count Per Million (CPM) normalization 
+We also perform CPM normalization to assess its performance in additions to  the TCGA FPKM and FPKM.UQ normalizations.
+```{r CpmKich, message=F, warning=F, error=F}
+cpm.data <- edgeR::cpm(
+  y = as.matrix(
+    SummarizedExperiment::assay(
+      kich.se, 
+      'HTseq_counts'))
+  )
+```
+
+here, we add the CPM data to the SummarizedExperiment object. 
+
+```{r seKich, message=F, warning=F, error=F}
+SummarizedExperiment::assay(kich.se, 'CPM') <- cpm.data
+row.names(kich.se) <- SummarizedExperiment::rowData(kich.se)$hgnc_symbol_BioMart
+```
+
+## Spearman correlations between library size and gene expression
+Ideally, normalized gene expression values should have no significant association with library size in RNA-seq data. The relationship between individual normalized gene expression measurements and library size are assessed using Spearman correlation.\
+Figure \@ref(fig:corrLsGeneKich) show Spearman correlation coefficients between individual gene expression and log2 of library size in differently normalized TCGA KICH data. The normalizations reduced the effects of library size, but they showed shortcomings: there are remarkable number of genes that they lave postie and negative correlations with library size in the normalized datasets. 
+
+```{r corrLsGeneKich, message=F, warning=F, error=F, fig.dim=c(8,8), fig.cap='scatter plots show Spearman correlation coefficients between individual gene expression and log2 of library size in differently normalized TCGA KICH data'}
+normalizations <- names(
+  SummarizedExperiment::assays(kich.se)
+  )
+corr.geneLs <- lapply(
+  normalizations,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(kich.se, x)),
+      is.log = FALSE,
+      variable = kich.se$LibSize,
+      method = 'spearman',
+      n.cores = 5,
+      group = 'ls'
+      )$ls_rho
+    })
+corr.geneLs.df <- do.call(cbind, corr.geneLs)
+colnames(corr.geneLs.df) <- c(
+  'Raw counts', 
+  'FPKM', 
+  'FPKM.UQ', 
+  'CPM'
+  )
+
+GGally::ggpairs(
+  corr.geneLs.df,
+  lower = list(continuous = GGally::wrap(upperfun)),
+  upper = NULL,
+  diag = NULL,
+  showStrips = TRUE,
+  switch = 'both'
+  ) +
+  theme(
+    strip.text.x = element_text(size = 15),
+    strip.text.y = element_text(size = 15),
+    )
+```
+
+## Sevral examples
+
+Figure \@ref(fig:corrLsGeneKcih) show the relationships between several genes and library size in the TCGA KICH RNA-Seq data that are normalized by different methods.
+
+```{r corrLsGeneKcih, message=F, warning=F, error=F, fig.dim=c(8,9), fig.cap='Relationship of several gene expression with library size in differently normalized TCGA KICH RNA-seq data'}
+selected.genes <- c(
+  'ARF5', 
+  'ARF1', 
+  'CAPRIN1', 
+  'GPKOW'
+  ) 
+pp <- lapply(
+  selected.genes,
+  function(i){
+      df <- data.frame(
+    Raw.counts = log2(unlist(SummarizedExperiment::assay(
+      kich.se, 'HTseq_counts'))[i, ] +1),
+    FPKM = log2(unlist(SummarizedExperiment::assay(
+      kich.se, 'HTseq_FPKM'))[i , ] +1),
+    FPKM.UQ = log2(unlist(SummarizedExperiment::assay(
+      kich.se, 'HTseq_FPKM.UQ'))[i , ] +1),
+    CPM = log2(unlist(SummarizedExperiment::assay(
+      kich.se, 'CPM'))[i , ] +1),
+    LibSize = kich.se$LibSize
+  ) %>%
+  tidyr::pivot_longer(
+    -LibSize,
+    names_to = 'datasets',
+    values_to = 'expr') %>%
+    dplyr::mutate(datasets = replace(
+      datasets, grep(
+        'Raw.counts', datasets), 'Raw counts')) %>%
+    dplyr::mutate(datasets = factor(datasets,  levels = c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'CPM')) ) %>%
+  as.data.frame(.)
+  p <- ggplot(df, aes(x = LibSize, y = expr)) +
+    geom_point(size = 1) +
+    ylab(expression(Log[2] ~ 'gene expression'))  +
+    xlab(expression(Log[2] ~ 'library size')) +
+    facet_wrap( ~ datasets, scale = 'free', ncol = 4) +
+    ggtitle(i) +
+        ggpubr::stat_cor(
+      aes(label = ..r.label..),
+      label.x.npc = .01,
+      label.y.npc = .9,
+      method = 'spearman',
+      hjust = 0,
+      size = 6,
+      r.digits = .1,
+      col = 'red',
+      cor.coef.name = "rho"
+    ) +
+    geom_smooth(
+      method = 'lm',
+      formula = y ~ x,
+      col = 'red',
+      se = T ) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1),
+      plot.title = element_text(size = 14),
+      axis.title.x = element_text(size = 12),
+      axis.title.y = element_text(size = 12),
+      axis.text.x = element_text(size = 8),
+      axis.text.y = element_text(size = 8),
+      legend.text = element_text(size = 10),
+      legend.title = element_text(size = 14),
+      strip.text.x = element_text(size = 13),
+      legend.position = 'none'
+    ) 
+  p
+
+  })
+do.call(
+  gridExtra::grid.arrange,
+  c(pp,
+    ncol = 1)
+  )
+```
+
+
+
+```{r}
+# selected genes
+ls.gene <- as.data.frame(apply(
+  corr.geneLs.df, 
+  2, 
+  function(x) {
+  c(length(which(x > .3)), length(which(x < -.3)))}
+  ))
+colnames(ls.gene) <- c(
+  'Raw counts', 
+  'FPKM', 
+  'FPKM.UQ', 
+  'CPM'
+  )
+ls.gene$dir <- c('High', 'Low')
+ls.gene <- ls.gene %>% 
+  tidyr::pivot_longer(
+    -dir, 
+    values_to = 'no', 
+    names_to = 'Datasets') %>% 
+  dplyr::mutate(Datasets = factor(
+    Datasets, 
+    levels = c(
+      'Raw counts', 
+      'FPKM', 
+      'FPKM.UQ', 
+      'CPM'))) %>% 
+  data.frame(.)
+ggplot(ls.gene, aes(x = Datasets, y = no, group = dir, fill = dir)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(
+    labels = c("> 0.3", " < - 0.3"), 
+    values = c("darkgreen", "navy"), 
+    name = 'Spearman correlation') +
+  ylab('count') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 18),
+    axis.title.x = element_text(size = 25),
+    axis.title.y = element_text(size = 25),
+    legend.text = element_text(size = 25),
+    strip.text = element_text(size = 15),
+    legend.title=element_text(size = 20),
+    plot.title = element_text(size = 25),
+  )
+```
+

@@ -1,0 +1,378 @@
+---
+title: "Statistical_Summaries_ROLCRS"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "15-02-2020"
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 5
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r knitr_init, echo=FALSE, results="asis"}
+library(knitr)
+library(rmdformats)
+library(DT)
+library(BiocStyle)
+options(max.print = "75")
+opts_chunk$set(
+  echo = FALSE,
+  prompt = FALSE,
+  comment = FALSE,
+  message = FALSE,
+  warning = FALSE)
+opts_knit$set(width = 65)
+```
+
+# R Libraries
+
+```{r}
+library(TCGAbiolinks)
+library(foreach)
+library(parallel)
+library(doParallel)
+```
+
+# Statistical test
+
+```{r}
+### Set-up files
+sum.expr.path <- paste0(
+  dataPath,
+  'TCGA_AllCancer_SummarizedExperiment/'
+  )
+all.files <- readRDS(paste0(
+   dataPath,
+   'TCGA_ListOfAllTcgaHarmonizedFiles_TCGAbiolinks.rds')
+   )
+stat.summaries.path <- paste0(
+  dataPath, 
+  'TCGA_AllCancer_StatisticalSummaries/'
+  )
+
+### PCA
+n.cores <- parallel::detectCores()-3
+cl <- parallel::makeCluster(n.cores)
+doParallel::registerDoParallel(cl)
+req.package <- c('SummarizedExperiment')
+foreach::foreach(i = 1:nrow(all.files), .packages = req.package) %dopar%  {
+  htseq.data <- readRDS(paste0(
+    sum.expr.path,
+    all.files$sum.expr[i]))
+  ### remove lowly expressed genes and non protein coding gene
+  gene.annot <- as.data.frame(SummarizedExperiment::rowData(htseq.data))
+  keep.genes <- gene.annot$keep.cancer == 'yes' & gene.annot$protein.coding == 'yes'
+  gene.annot <- gene.annot[keep.genes, ]
+  htseq.data <- htseq.data[keep.genes, ]
+
+  ### Keep plates with more 2 samples-removing outliers
+  keep.samples <- htseq.data$plates.status.cancer == 'yes' &
+    htseq.data$outlier.ls.cancer == 'no' &
+      htseq.data$tissue == 'cancer'
+  htseq.data <- htseq.data[ , keep.samples]
+
+  row.names(htseq.data) <- gene.annot$hgnc_symbol_BioMart
+
+  ### Library size
+  htseq.data$ls <- colSums(as.matrix(assay(htseq.data, 'HTseq_counts')))
+  ### PCA cancer samples
+  data.sets <- names(SummarizedExperiment::assays(htseq.data))
+  pca.all <- lapply(
+    data.sets,
+    function(x){.pca(
+      data = as.matrix(SummarizedExperiment::assay(htseq.data, x)), 
+      is.log = FALSE)}
+    )
+  names(pca.all) <- data.sets
+  ### RLE
+  rle.all <- lapply(
+    data.sets,
+    function(x){
+      .rle.comp(
+        expr.data = as.matrix(
+          SummarizedExperiment::assay(htseq.data, x)
+          ),
+        is.log = FALSE)
+    })
+  names(rle.all) <- data.sets
+  ### cor genes with ls
+  corr.genes.librarySize <- lapply(
+    data.sets,
+    function(x){
+      .genes.var(
+        data = as.matrix(
+          SummarizedExperiment::assay(htseq.data, x)
+          ),
+        variable = log2(htseq.data$ls),
+        is.log = FALSE)
+    })
+  names(corr.genes.librarySize) <- data.sets
+  ### cor genes with median of RLE
+  corr.genes.medianRle <- lapply(
+    data.sets,
+    function(x){
+      .genes.var(
+        data = as.matrix(
+          SummarizedExperiment::assay(htseq.data, x)
+          ),
+        var = rle.all[[x]]$rle.med,
+        is.log = FALSE)
+    })
+  names(corr.genes.medianRle) <- data.sets
+  ### cor genes with IQR of RLE
+  corr.genes.IqrRle <- lapply(
+    data.sets,
+    function(x){
+      .genes.var(
+        data = as.matrix(
+          SummarizedExperiment::assay(htseq.data, x)
+          ),
+        variable = rle.all[[x]]$rle.iqr,
+        is.log = FALSE)
+    })
+  names(corr.genes.IqrRle) <- data.sets
+
+  ### cor genes with purity
+  corr.genes.purity <- lapply(
+    data.sets,
+    function(x){
+      .genes.var(
+        data = as.matrix(SummarizedExperiment::assay(htseq.data, x)),
+        variable = htseq.data$purity_HTseq_FPKM,
+        is.log = FALSE)
+    })
+  names(corr.genes.purity) <- data.sets
+  
+  ### plate effects
+  if(length(unique(htseq.data$plate_RNAseq)) > 1 ){
+    ftest.plates <- lapply(
+      data.sets,
+      function(x){
+        plate.effects <- .Ftest(
+          data = as.matrix(
+            SummarizedExperiment::assay(htseq.data, x)
+            ),
+          is.log = FALSE,
+          variable = as.factor(htseq.data$plate_RNAseq),
+          n.cores = 1)
+        })
+    names(ftest.plates) <- data.sets
+    }else{
+      ftest.plates <- 'There is only a plate'
+    }
+
+  ### time effects
+  if(length(unique(htseq.data$year_mda)) > 1){
+    ftest.years <- lapply(
+      data.sets,
+      function(x){
+        year.effects <- .Ftest(
+          data = as.matrix(
+            SummarizedExperiment::assay(htseq.data, x)
+            ),
+          is.log = FALSE,
+          variable = as.factor(htseq.data$year_mda),
+          n.cores = 1)
+        })
+    names(ftest.years) <- data.sets
+    }else{
+      ftest.years <- 'There is only a year'
+    }
+
+  ### batch IDs
+  if(length(unique(htseq.data$BatchId_mda)) > 1){
+    ftest.bacth.ids <- lapply(
+      data.sets,
+      function(x){
+        year.effects <- .Ftest(
+          data = as.matrix(
+            SummarizedExperiment::assay(htseq.data, x)
+            ),
+          is.log = FALSE,
+          var = as.factor(htseq.data$BatchId_mda),
+          n.cores = 11)
+        })
+    names(ftest.bacth.ids) <- data.sets
+    }else{
+      ftest.bacth.ids <- 'There is only a BatchId'
+    }
+  
+  ### Linear regression between PCA and library size
+  nPCs <- 5
+  linear.reg.pca.librarySize <- lapply(
+    data.sets,
+    function(y) {
+      pcs <- pca.all[[y]]$sing.val$u[, 1:nPCs]
+      pcs.var <- pca.all[[y]]$variation[1:nPCs]
+      lreg <- sapply(
+        1:nPCs,
+        function(z) {
+          lm.pca.librarySize <- summary(
+            lm(htseq.data$ls ~ pcs[, 1:z]))$r.squared
+        })
+      df <- data.frame(
+        lm.square = lreg,
+        pcs.var = pcs.var,
+        pcs = paste0('PC', c(1:nPCs)),
+        cancer = rep(all.files$cancer[i], nPCs),
+        data = rep(y, nPCs)
+      )
+      return(df)
+      rm(df, y, lreg, pcs, pcs.var)
+    })
+  names(linear.reg.pca.librarySize) <- data.sets
+  
+  ### Linear regression between PCA and purity
+  nPCs <- 5
+  linear.reg.pca.purity <- lapply(
+    data.sets,
+    function(y) {
+      pcs <- pca.all[[y]]$sing.val$u[, 1:nPCs]
+      pcs.var <- pca.all[[y]]$variation[1:nPCs]
+      lreg <- sapply(
+        1:nPCs,
+        function(z) {
+          lm.pca.librarySize <- summary(lm(
+            htseq.data$purity_HTseq_FPKM ~ pcs[, 1:z]))$r.squared
+        })
+      df <- data.frame(
+        lm.square = lreg,
+        pcs.var = pcs.var,
+        pcs = paste0('PC', c(1:nPCs)),
+        cancer = rep(all.files$cancer[i], nPCs),
+        data = rep(y, nPCs)
+      )
+      return(df)
+      rm(df, y, lreg, pcs, pcs.var)
+    })
+  names(linear.reg.pca.purity) <- data.sets
+  
+  ### Linear regression between PCA and RleMedian
+  nPCs <- 5
+  linear.reg.pca.rleMedian <- lapply(
+    data.sets,
+    function(y) {
+      pcs <- pca.all[[y]]$sing.val$u[, 1:nPCs]
+      pcs.var <- pca.all[[y]]$variation[1:nPCs]
+      variable <- rle.all[[y]]$rle.med
+      lreg <- sapply(
+        1:nPCs,
+        function(z) {
+          lm.pca.librarySize <- summary(lm(variable ~ pcs[, 1:z]))$r.squared
+        })
+      df <- data.frame(
+        lm.square = lreg,
+        pcs.var = pcs.var,
+        pcs = paste0('PC', c(1:nPCs)),
+        cancer = rep(all.files$cancer[i], nPCs),
+        data = rep(y, nPCs)
+      )
+      return(df)
+      rm(df, y, lreg, pcs, pcs.var)
+    })
+  names(linear.reg.pca.rleMedian) <- data.sets
+  
+  ### Canonical correlation between PCA and plates
+  if (length(unique(htseq.data$plate_RNAseq)) > 1) {
+    cca.pca.plates <- lapply(
+      data.sets,
+      function(y) {
+        pcs <- pca.all[[y]]$sing.val$u[, 1:nPCs]
+        pcs.var <- pca.all[[y]]$var[1:nPCs]
+        bacth.dummies <- fastDummies::dummy_cols(htseq.data$plate_RNAseq)
+        bacth.dummies <- bacth.dummies[, c(2:ncol(bacth.dummies))]
+        cca.coeff <- sapply(
+          1:nPCs,
+          function(z){
+            cca.time <- stats::cancor(
+              x = pcs[, 1:z, drop = FALSE],
+              y = bacth.dummies)
+            cca.coeff <- 1 - prod(1 - cca.time$cor^2)
+            })
+        df <- data.frame(
+          cc = cca.coeff,
+          pcs.var = pcs.var,
+          pcs = paste0('PC', c(1:nPCs)),
+          cancer = rep(all.files$cancer[i], nPCs),
+          data = rep(y, nPCs)
+        )
+        return(df)
+        })
+  }
+  names(cca.pca.plates) <- data.sets
+  
+  ### Putting all tests together
+  final.out.put <- list(
+    pca = pca.all,
+    rle = rle.all,
+    corr.genes.librarySize = corr.genes.librarySize,
+    corr.genes.medianRle = corr.genes.medianRle,
+    corr.genes.IqrRle = corr.genes.IqrRle,
+    corr.genes.purity = corr.genes.purity,
+    anova.genes.plates = ftest.plates,
+    anova.genes.years = ftest.years,
+    anova.genes.batchIds = ftest.bacth.ids,
+    linear.reg.pca.librarySize = linear.reg.pca.librarySize,
+    linear.reg.pca.purity = linear.reg.pca.purity,
+    linear.reg.pca.rleMedian = linear.reg.pca.rleMedian,
+    cca.pca.plates = cca.pca.plates,
+    genes = row.names(htseq.data),
+    librarySize = htseq.data$ls,
+    purtiy = htseq.data$purity_HTseq_FPKM,
+    plate.ids = htseq.data$plate_RNAseq,
+    time.years = htseq.data$year_mda,
+    tss = htseq.data$tss_RNAseq,
+    batch.ids = htseq.data$BatchId_mda,
+    n.samples = ncol(htseq.data)
+    )
+  saveRDS(
+    object = final.out.put,
+    file = paste0(
+      stat.summaries.path,
+      'TCGA_HTseq_Cancer_FilteredGenesSamples_StatisticalSummaries_',
+      all.files$cancer[i],
+      '.rds'
+    ))
+  rm(i, final.out.put)
+}
+stopCluster(cl)
+
+
+files <- list.files(
+  path = har.meta.data.path,
+  'TCGA_HTseq_Cancer_Filtered_PCA_RLE_Cor_')
+
+har.cancer.dataSets$rle.pca.corr <- files
+saveRDS(
+  object = har.cancer.dataSets,
+  file = paste0(
+    har.meta.data.path,
+   'TCGA_Harmonized_Cancer_MetaDataFiles.rds')
+)
+```
+

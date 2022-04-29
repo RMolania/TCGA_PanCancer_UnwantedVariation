@@ -2,3 +2,12 @@
 .Rhistory
 .RData
 .Ruserdata
+Extra/
+Manuscript/
+Figure/
+BulkRNAseq/
+HelperFigures_Rev_NBT/
+Data/
+Rshiny/
+Vignettes/
+TCGA_PanCancer_UnwantedVariation.Rproj

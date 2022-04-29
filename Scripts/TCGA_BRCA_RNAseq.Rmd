@@ -1,0 +1,4688 @@
+---
+title: "Normalization of TCGA BRCA RNA-seq data using RUV-III-PRPS"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "15-02-2020"
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 5
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r knitr_init, echo=FALSE, results="asis"}
+library(knitr)
+library(rmdformats)
+library(DT)
+library(BiocStyle)
+options(max.print = "75")
+opts_chunk$set(
+  echo = FALSE,
+  prompt = FALSE,
+  comment = FALSE,
+  message = FALSE,
+  warning = FALSE)
+opts_knit$set(width = 65)
+```
+
+# Setup paths
+```{r file-setUp, message=FALSE, include=FALSE, results=F}
+mainDir <- getwd()
+figPath <- "../Figure/"
+dataPath <- "Data/"
+scriptPath <- "Scripts/"
+```
+
+# Setup BRCA paths
+
+```{r setUp-path-files}
+### Path to all datasets related to the TCGA READ data analysis
+# dir.create(paste0(
+#   dataPath,
+#   'TCGA_BRCA_DataSets')
+#   )
+brca.data.path <- paste0(dataPath, 'TCGA_BRCA_DataSets/')
+
+### Path to all figures related to the TCGA READ data analysis
+# dir.create(paste0(
+#   figPath,
+#   'TCGA_BRCA_Figures')
+#   )
+brca.fig.path <- paste0(figPath, 'TCGA_BRCA_Figures/')
+```
+
+# Data prepration
+## Remvoing  genes
+### remove lowly expressed genes
+```{r}
+### TCGA BRCA RNAseq data
+brca.se <- readRDS(
+  paste0(
+    '../data/TCGA_AllCancer_SummarizedExperiment/',
+    'TCGA_SummarizedExperiment_HTseq_BRCA.rds')
+  ) #  56493 1222
+
+normal.tissues <- SummarizedExperiment::colData(brca.se)$tissue == 'normal'
+cancer.tissues <- SummarizedExperiment::colData(brca.se)$tissue == 'cancer'
+
+keep.genes.normal <- apply(
+  SummarizedExperiment::assay(
+    brca.se[ , normal.tissues], 
+    'HTseq_counts'), 
+  1, 
+  function(x) length(x[x > 15]) >= round(.11*sum(normal.tissues), digits = 0)
+  )
+keep.genes.normal <- names(keep.genes.normal[keep.genes.normal == TRUE])
+
+keep.genes.cancer <- apply(
+  SummarizedExperiment::assay(
+    brca.se[ , cancer.tissues], 
+    'HTseq_counts'), 
+  1, 
+  function(x) length(x[x > 15]) >= round(.1*sum(cancer.tissues), digits = 0)
+  )
+keep.genes.cancer <- names(keep.genes.cancer[keep.genes.cancer == TRUE])
+```
+
+### keep protein conding genes
+We also keep only protein coding genes. This detail can be found in the "gene_type" column of the gene annotation file.
+```{r }
+proteinCoding.index <- as.data.frame(
+  SummarizedExperiment::rowData(brca.se)
+  )$gene_type. == 'protein.coding'
+keep.proteinCoding <- as.data.frame(
+  SummarizedExperiment::rowData(brca.se)
+  )$gene_id.v[proteinCoding.index]
+selected.genes <- intersect(
+  unique(c(keep.genes.normal, keep.genes.cancer)),
+  keep.proteinCoding
+  )
+SummarizedExperiment::rowData(brca.se)$selected.genes <- 'remove'
+SummarizedExperiment::rowData(brca.se)$selected.genes[
+  SummarizedExperiment::rowData(brca.se)$gene_id.v %in% selected.genes
+  ] <- 'keep'
+```
+
+### remove genes with no or duplicated ENTREZ or gene symbol ids
+Further, we remove genes that have no ENTREZ gene ids or gene symbol, and genes that have duplicated ENTREZ gene ids or gene symbol.
+```{r Enterz, message=FALSE, warning=F}
+### entrez ids
+SummarizedExperiment::rowData(brca.se)$entrezgene.use <- 'keep'
+na.duplicated <- is.na(SummarizedExperiment::rowData(brca.se)$entrezgene_id_BioMart) |
+  duplicated(SummarizedExperiment::rowData(brca.se)$entrezgene_id_BioMart)
+SummarizedExperiment::rowData(brca.se)$entrezgene.use[na.duplicated] <- 'remove'
+
+### gene symbol
+SummarizedExperiment::rowData(brca.se)$geneName.use <- 'keep'
+na.duplicated <- is.na(SummarizedExperiment::rowData(brca.se)$gene_name.) |
+  duplicated(SummarizedExperiment::rowData(brca.se)$gene_name.)
+SummarizedExperiment::rowData(brca.se)$geneName.use[na.duplicated] <- 'remove'
+
+keep.genes <- SummarizedExperiment::rowData(brca.se)$entrezgene.use == 'keep' &
+  SummarizedExperiment::rowData(brca.se)$geneName.use == 'keep' &
+  SummarizedExperiment::rowData(brca.se)$selected.genes == 'keep'
+brca.se <- brca.se[ keep.genes, ] # 16537  1222
+```
+
+## Breast cancer PAM50 subtype calls
+Adding PAM50 subtypes obtained from the TCGA calls
+
+```{r}
+brca.pam50Calls <- read.delim(paste0(
+  brca.data.path,
+  'tcga.brca.pam50.calls.ucf.txt')
+  )
+row.names(brca.pam50Calls) <- brca.pam50Calls$Barcode
+### Remove  samples
+brca.pam50Calls <- droplevels(
+  brca.pam50Calls[brca.pam50Calls$Use == 'YES' , ]
+  )
+### common samples
+common.samples <- intersect(
+  colnames(brca.se),
+  brca.pam50Calls$Barcode
+  )
+brca.pam50Calls <- brca.pam50Calls[common.samples , ]
+brca.se <- brca.se[ , common.samples]
+
+col.names <- colnames(brca.pam50Calls)
+for(i in 1:length(col.names)){
+  SummarizedExperiment::colData(brca.se)[ , col.names[i]] <- brca.pam50Calls[ , i]
+}
+
+remove.sample <- which(SummarizedExperiment::colData(brca.se)$Tissue.Type == 'adjacent normal' &
+  SummarizedExperiment::colData(brca.se)$Call == 'LumA')
+brca.se <- brca.se[ , -remove.sample]
+
+### Normal tissues
+normal.samples <- SummarizedExperiment::colData(brca.se)$Tissue.Type == 'adjacent normal'
+SummarizedExperiment::colData(brca.se)$Call[normal.samples] <- 'Adjacent normal'
+SummarizedExperiment::colData(brca.se)$Call[
+  SummarizedExperiment::colData(brca.se)$Call == 'Normal'] <- 'Normal like'
+SummarizedExperiment::colData(brca.se)$Call <- factor(
+  SummarizedExperiment::colData(brca.se)$Call,
+  levels = c(
+    'Adjacent normal' ,
+    'Basal',
+    'Her2',
+    'LumA',
+    'LumB',
+    'Normal like')
+  )
+```
+
+## Removing samples
+### remove plates with less than 3 samples
+```{r}
+keep.plates <- names(which(table(brca.se$plate_RNAseq) > 2))
+keep.plates <- brca.se$plate_RNAseq %in% keep.plates
+brca.se <- brca.se[ , keep.plates]  # 16537 1180
+```
+
+## Add more details to sample information object
+### flow cell chemistry details
+The BrCa samples were profiled by using two different chemistry reagents.
+```{r}
+brca.se$FcCh <- '2012:2014'
+brca.se$FcCh[brca.se$year_mda < 2012 ] <- '2010:2011'
+brca.se$FcCh <- factor(
+  brca.se$FcCh,
+  levels = c('2010:2011', '2012:2014'))
+table(brca.se$FcCh, brca.se$year_mda)
+  #           2010 2011 2012 2013 2014
+  # 2010:2011  356  578    0    0    0
+  # 2012:2014    0    0   82  120   44
+```
+
+## Library size
+```{r}
+brca.se$libSize <- log2(
+  colSums(SummarizedExperiment::assay(brca.se, 'HTseq_counts'))
+  )
+summary(brca.se$libSize)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.
+#  24.15   25.48   25.75   25.72   26.00   26.74 
+```
+
+## PAM50 Molecular subtyping
+More institutions now include Ki67,
+thus classifying tumors into triple-negative (TN; ER−/PR−/HER2−)
+HER2+ (ER−/PR−/HER2+)
+LA (ER+/HER2−/Ki67−)
+LB1 (ER+/HER2−/Ki67+)
+LB2 (ER+/HER2+)
+
+### geneFu r package
+```{r}
+tcga.harmonized <- names(
+  SummarizedExperiment::assays(brca.se)
+  )
+row.names(brca.se) <- SummarizedExperiment::rowData(brca.se)$gene_name.
+load('Data/pam50.rda')
+load('Data/pam50.robust.rda')
+pam50.geneFu <- lapply(
+  tcga.harmonized,
+  function(x){
+    data <- log2(as.matrix(SummarizedExperiment::assay(
+      brca.se, x)) + 1)
+    .pam50.geneFu(
+      expr.data = data,
+      gene.annot = as.data.frame(
+        SummarizedExperiment::rowData(brca.se))
+      )
+    })
+names(pam50.geneFu) <- tcga.harmonized
+
+### Add to sample annot
+col.names <- c(
+  'pam50.geneFu.raw', 
+  'pam50.geneFu.fpkm', 
+  'pam50.geneFu.fpkmUq'
+  )
+for(i in 1:3){
+  pam50.geneFu[[i]]$subtype <-
+    as.character(pam50.geneFu[[i]]$subtype )
+  index.a <- pam50.geneFu[[i]]$subtype == 'Normal'
+  pam50.geneFu[[i]]$subtype[index.a] <- 'Normal like'
+  index.b <-  brca.se$Tissue.Type == 'adjacent normal'
+  pam50.geneFu[[i]]$subtype[index.b] <- 'Adjacent normal'
+  SummarizedExperiment::colData(brca.se)[ , col.names[i]] <- 
+    factor(
+      x = pam50.geneFu[[i]]$subtype, 
+      levels =  c(
+        "Adjacent normal",
+        "Basal",
+        "Her2",
+        "LumA",
+        "LumB",
+        "Normal like"))
+}
+```
+
+### tcga pam50 algorithm
+I classify the samples based on the PAM50.
+```{r}
+pam50.tcga.classifier <- lapply(
+  tcga.harmonized,
+  function(x){
+    data <- log2(as.matrix(
+      SummarizedExperiment::assay(brca.se, x)) + 1
+      )
+    .pam50.classifier(
+      expr.data = data, 
+      tcga.calibration = FALSE, 
+      ncores = 5)
+    })
+names(pam50.tcga.classifier) <- tcga.harmonized
+
+col.names <- c(
+  'pam50.tcgaAlgo.raw', 
+  'pam50.tcgaAlgo.fpkm', 
+  'pam50.tcgaAlgo.fpkmUq'
+  )
+for(i in 1:3){
+  pam50.tcga.classifier[[i]]$predictions <-
+    as.character(pam50.tcga.classifier[[i]]$predictions )
+  index.a <- pam50.tcga.classifier[[i]]$predictions == 'Normal'
+  pam50.tcga.classifier[[i]]$predictions[index.a] <- 'Normal like'
+  index.b <-  brca.se$Tissue.Type == 'adjacent normal'
+  pam50.tcga.classifier[[i]]$predictions[index.b] <- 'Adjacent normal'
+  SummarizedExperiment::colData(brca.se)[ , col.names[i]] <- 
+    factor(
+      x = pam50.tcga.classifier[[i]]$predictions, 
+      levels =  c(
+        "Adjacent normal",
+        "Basal",
+        "Her2",
+        "LumA",
+        "LumB",
+        "Normal like"))
+}
+```
+
+### tcga pam50 algorithm - er balanced
+```{r}
+brca.se$er.status <- 'intermediate'
+brca.se$er.status [brca.se$ER < -1.4] <- 'negative'
+brca.se$er.status[brca.se$ER > 1.4] <- 'positive'
+
+### ER status
+er.negative <- brca.se$Sample[brca.se$er.status == 'negative']
+er.positve <- brca.se$Sample[brca.se$er.status == 'positive']
+brca.se$er.status[brca.se$tissue == 'normal'] <- 'normal'
+
+### PAM50 ER balanced data
+pamPath <- paste0(
+  '../data/TCGA_BRCA_DataSets/',
+  'TCGA_PAM50_Classifier/'
+  )
+### PAM50 centroid
+pam50.centroid <- read.delim(
+  paste0(
+    pamPath,
+    'R_code_rnaseq/',
+    'pam50_centroids.txt'),
+  stringsAsFactors = FALSE
+  )
+pam50.centroid$X[pam50.centroid$X == 'KNTC2'] <- 'NDC80'
+pam50.centroid$X[pam50.centroid$X == 'CDCA1'] <- 'NUF2'
+pam50.centroid$X[pam50.centroid$X == 'ORC6L'] <- 'ORC6'
+pam50.genes = pam50.centroid$X
+
+### PAM50
+index.cancer <- brca.se$tissue == 'cancer'
+pam50.tcgaClassifierErBalanced <- lapply(
+  tcga.harmonized,
+  function(x){
+    data <- as.matrix(SummarizedExperiment::assay(brca.se, x))
+    .pam50Classifier.erBalanced(
+      expr.data = log2(data[ , index.cancer] + 1),
+      sample.annot = SummarizedExperiment::colData(brca.se)[index.cancer , ],
+      pam50.genes = pam50.centroid$X, 
+      ncores = 5)
+    })
+names(pam50.tcgaClassifierErBalanced) <- tcga.harmonized
+
+col.names <- c(
+  'pam50.erBalanced.raw', 
+  'pam50.erBalanced.FPKM', 
+  'pam50.erBalanced.FPKM.UQ'
+  )
+index.cancer <- which(brca.se$tissue == 'cancer')
+for(i in 1:3){
+  pam50.tcgaClassifierErBalanced[[i]]$predictions <-
+    as.character(pam50.tcgaClassifierErBalanced[[i]]$predictions )
+  index.a <- pam50.tcgaClassifierErBalanced[[i]]$predictions == 'Normal'
+  pam50.tcgaClassifierErBalanced[[i]]$predictions[index.a] <- 'Normal like'
+  SummarizedExperiment::colData(brca.se)[ , col.names[i]] <- 'Adjacent normal'
+  SummarizedExperiment::colData(brca.se)[ , col.names[i]][index.cancer] <-  
+    pam50.tcgaClassifierErBalanced[[i]]$predictions 
+  SummarizedExperiment::colData(brca.se)[ , col.names[i]] <- 
+    factor(
+      x = SummarizedExperiment::colData(brca.se)[ , col.names[i]], 
+      levels =  c(
+        "Adjacent normal",
+        "Basal",
+        "Her2",
+        "LumA",
+        "LumB",
+        "Normal like"))
+}
+```
+
+Upper-quartile normalization
+```{r}
+### Upper-quartile normalization
+brca.uq <- log2(EDASeq::betweenLaneNormalization(
+  x = SummarizedExperiment::assay(brca.se, 'HTseq_counts'), 
+  which = 'upper'
+  ) + 1)
+index.cancer <- brca.se$tissue == 'cancer'
+pam50.uq <- .pam50Classifier.erBalanced(
+  expr.data = brca.uq[ , index.cancer],
+  sample.annot = SummarizedExperiment::colData(brca.se)[index.cancer , ],
+  pam50.genes = pam50.centroid$X,
+  ncores = 8
+  )
+### All
+pam50.uq$predictions[pam50.uq$predictions == 'Normal'] <- 'Normal like'
+index.cancer <- which(brca.se$tissue == 'cancer')
+SummarizedExperiment::colData(brca.se)$pam50.erBalanced.UQ <- 
+  'Adjacent normal'
+SummarizedExperiment::colData(brca.se)$pam50.erBalanced.UQ[index.cancer] <- 
+  pam50.uq$predictions
+SummarizedExperiment::colData(brca.se)$pam50.erBalanced.UQ <-
+  factor(
+    x = SummarizedExperiment::colData(brca.se)$pam50.erBalanced.UQ,
+    levels =  c("Adjacent normal",
+                "Basal",
+                "Her2",
+                "LumA",
+                "LumB",
+                "Normal like")
+  )
+```
+
+# Study outline
+```{r}
+selected.columns <- c(
+  'year_mda',
+  'plate_RNAseq',
+  'tss_RNAseq',
+  'libSize',
+  'purity_HTseq_FPKM',
+  'Tissue.Type',
+  'pam50.geneFu.fpkm',
+  'Call',
+  'FcCh'
+  )
+sample.info <- SummarizedExperiment::colData(
+  brca.se)[ , selected.columns]
+
+### Year
+H.year <- ComplexHeatmap::Heatmap(
+  rev(sample.info$year_mda),
+  cluster_columns  = FALSE,
+  column_names_gp = grid::gpar(fontsize = 18),
+  col =  years.colors,
+  name = 'Time (years)',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    ncol = 2,
+    title_gp = grid::gpar(fontsize = 18)
+    )
+  )
+
+### Plates
+n.plate <- length(unique(sample.info$plate_RNAseq)) # 38
+colfunc <- grDevices::colorRampPalette(
+  RColorBrewer::brewer.pal(11, 'PRGn')[-6]
+  )
+color.plates <- colfunc(n.plate)
+H.plate <- ComplexHeatmap::Heatmap(
+  rev(sample.info$plate_RNAseq),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_names_gp = grid::gpar(fontsize = 18),
+  col = color.plates,
+  name = 'Plates',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    ncol = 4,
+    title_gp = grid::gpar(fontsize = 18)
+    )
+  )
+
+### TSS
+n.tss <- length(unique(sample.info$tss_RNAseq)) # 40
+colfunc <- grDevices::colorRampPalette(
+  RColorBrewer::brewer.pal(11, 'BrBG')[-6]
+  )
+color.tss <- colfunc(n.tss)
+H.tss <- ComplexHeatmap::Heatmap(
+  rev(sample.info$tss_RNAseq),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_names_gp = grid::gpar(fontsize = 18),
+  col = color.tss,
+  name = 'Tissue source sites',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    ncol = 4,
+    title_gp = grid::gpar(fontsize = 18)
+    )
+  )
+
+### Tissue
+H.tissue <- ComplexHeatmap::Heatmap(
+  rev(sample.info$Tissue.Type),
+  cluster_rows = FALSE,
+  column_names_gp = grid::gpar(fontsize = 18),
+  col = c("#252525", 'blue', "#D9D9D9"),
+  name = 'Tissues',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    direction = "vertical",
+    ncol = 1,
+    title_gp = grid::gpar(fontsize = 18),
+    labels = c(
+      'Primary tumor', 
+      'Metastatic tumor',  
+      'Adjacent normal')
+    )
+  )
+
+### Purity
+H.purity <- ComplexHeatmap::Heatmap(
+  rev(sample.info$purity_HTseq_FPKM),
+  column_names_gp = grid::gpar(fontsize = 18),
+  cluster_rows = FALSE,
+  name = 'Tumor purity score',
+  col = viridis::plasma(n = 10),
+  heatmap_legend_param = list(
+    title_gp = grid::gpar(fontsize = 18)
+    )
+  )
+
+### library size
+H.ls <- ComplexHeatmap::Heatmap(
+  rev(sample.info$libSize),
+  cluster_rows = FALSE,
+  name = 'Library size',
+  column_names_gp = grid::gpar(fontsize = 18),
+  col = viridis::viridis(n = 10),
+   heatmap_legend_param = list(
+    title_gp = grid::gpar(fontsize = 18)
+    )
+  )
+
+### PAM50
+H.pam50.tcga <- ComplexHeatmap::Heatmap(
+  rev(sample.info$Call),
+  cluster_rows = FALSE,
+  name = 'PAM50 (TCGA calls)',
+  column_names_gp = grid::gpar(fontsize = 18),
+  col = pam50.colors,
+   heatmap_legend_param = list(
+    title_gp = grid::gpar(fontsize = 18)
+    )
+  )
+
+### PAM50 genefu
+H.pam50.genefu <- ComplexHeatmap::Heatmap(
+  rev(sample.info$pam50.geneFu.fpkm),
+  cluster_rows = FALSE,
+  name = 'PAM50 (Genefu calls)',
+  column_names_gp = grid::gpar(fontsize = 18),
+  col = pam50.colors,
+   heatmap_legend_param = list(
+    title_gp = grid::gpar(fontsize = 18)
+    )
+  )
+
+### Flow cell chemistry
+H.fcch <- ComplexHeatmap::Heatmap(
+  rev(sample.info$FcCh),
+  cluster_rows = FALSE,
+  name = 'Flow cell chemistry',
+  column_names_gp = grid::gpar(fontsize = 18),
+  col = FcCh.colors,
+   heatmap_legend_param = list(
+    title_gp = grid::gpar(fontsize = 18),
+    direction = "horizontal"
+    )
+  )
+# tiff(paste(
+#   brca.fig.path ,
+#   'TCGA_BRCA_StudyDesign_HeatMapOfAll.tiff'),
+#   width = 3000,
+#   height = 4500,
+#   res = 400
+#   )
+ComplexHeatmap::draw(
+  H.year +
+    H.fcch +
+    H.plate +
+    H.tss +
+    H.tissue +
+    H.pam50.tcga +
+    H.pam50.genefu +
+    H.ls +
+    H.purity,
+  merge_legends = FALSE,
+  heatmap_legend_side = 'left'
+  )
+# dev.off()
+```
+
+```{r }
+### Primary and Met samples
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_StudyDesign_PrimaryMetSamples.tiff'),
+#     width = 3000,
+#     height = 1500,
+#     res = 400
+#     )
+Y <- c(1:7)
+plot(
+  -1:8,
+  -1:8,
+  typ = 'n',
+  ylab = '',
+  xlab = '',
+  yaxt = 'n',
+  xaxt = 'n',
+  bty = 'l',
+  frame = F,
+  main = 'Primary - Metastatic',
+  cex.main = 1.5
+  )
+X1 <- c(1,1,1,2,3,4,7)
+X2 <- c(1,1,5,2,6,5,7)
+plates <- c(
+  'A12P', 
+  'A12D', 
+  'A13Q', 
+  'A213', 
+  'A137', 
+  'A24H', 
+  'A32P'
+  )
+axis(1, at = c(1:7), labels = plates, lwd = 2)
+axis(2, at = c(1:7), las = 1, lwd = 2, pos = .4)
+mtext('Plates', 1, line = 2.5, cex = 1.5)
+mtext('Samples', 2, line = -3, cex = 1.5, at = 4)
+for(i in 1:7){
+  points(X1[i]-.1, Y[i], pch = 19, cex = 1.5)
+  points(X2[i]+.1, Y[i], pch = 19, cex = 1.5)
+  segments(X1[i]-.1, Y[i], X2[i]+.1, Y[i], lwd = 2)
+  segments(1,-1,3,-1, col = '#440154FF', lwd = 4)
+  segments(4,-1,7,-1, col = '#FDE725FF', lwd = 4)
+  }
+# dev.off()
+```
+
+
+# Microarray data - TCGA BRCA
+## data preparation
+The data were manually downloaded from the TCGA firehose website. The data version 2016_01_28. 
+
+```{r}
+brca.array.path <- paste0(
+  brca.data.path,
+  'TCGA_BRCA_Microarray/')
+brca.mArray <- read.delim(
+  paste0(
+  brca.array.path,
+  'BRCA.transcriptome__agilentg4502a_07_3__unc_edu__Level_3__unc_lowess_normalization_gene_level__data.data.txt'),
+  row.names = 1,
+  stringsAsFactors = FALSE
+  )
+brca.mArray <- brca.mArray[-1 , ]
+row.lables <- row.names(brca.mArray)
+brca.mArray <- apply(
+  brca.mArray,
+  2,
+  function(x) round(as.numeric(x), 3)
+  )
+row.names(brca.mArray) <- row.lables
+sum(is.na(brca.mArray)) # 1695
+brca.mArray <- brca.mArray[
+  complete.cases(brca.mArray) , ]
+colnames(brca.mArray) <- gsub(
+  '\\.', 
+  '-', 
+  colnames(brca.mArray)
+  )
+
+### common samples with RNAseq
+common.samples <- intersect(
+  SummarizedExperiment::colData(brca.se)$Sample,
+  colnames(brca.mArray)
+  ) # 580
+brca.mArray <- brca.mArray[ , common.samples]
+normal.tissue.micor <- grep(
+  '11A', 
+  colnames(brca.microarray)
+  )
+brca.mArray <- brca.mArray[ , -normal.tissue.micor] # 17280   525
+```
+
+# Breat cancer LCM data
+The first data is coming from GSE54002.
+
+## GSE78958
+### downloading the data
+
+```{r}
+gse78958 <- GEOquery::getGEO('GSE78958')
+expr.78958 <- as.data.frame(Biobase::exprs(gse78958[[1]])) # 22277   424
+sampleAnnot.78958 <- Biobase::pData(gse78958[[1]]) # 424  40
+all.equal(
+  colnames(expr.78958),
+  row.names(sampleAnnot.78958)
+  )
+gene.annot.78958 <- as.data.frame(gse78958[[1]]@featureData@data)
+all.equal(
+  gene.annot.78958$ID, 
+  row.names(expr.78958)
+  )
+
+### unique ids
+enterz <- sapply(
+  strsplit(gene.annot.78958$ENTREZ_GENE_ID, '///'),
+  length
+  )
+gene.symbol <- sapply(
+  strsplit(gene.annot.78958$`Gene Symbol`, '///'),
+  length
+  )
+unique.ids <- intersect(
+  which(enterz < 2),
+  which(gene.symbol < 2)
+  )
+length(unique.ids) # 20872
+gene.annot.78958 <- gene.annot.78958[unique.ids, ]
+gene.annot.78958$unique.ids <- paste(
+  gene.annot.78958$ENTREZ_GENE_ID,
+  gene.annot.78958$`Gene Symbol`,
+  sep = '_'
+  )
+gene.annot.78958 <- gene.annot.78958[gene.annot.78958$unique.ids != "_", ] # 19820    17
+expr.78958 <- expr.78958[gene.annot.78958$ID , ] #  19820   424
+sum(duplicated(gene.annot.78958$unique.ids)) # 7271
+```
+
+Averaging probes for individual genes
+
+```{r Averaging_probes}
+expr.78958$gene <- as.factor(gene.annot.78958$unique.ids)
+### Average
+expr.78958 <- data.table::as.data.table(expr.78958)
+expr.78958 <- as.data.frame(
+  expr.78958[ , lapply(.SD, mean),
+        'gene']
+  ) #  12549   425
+row.names(expr.78958) <- expr.78958$gene
+expr.78958 <- expr.78958[, -1]
+expr.78958 <- as.matrix(expr.78958)
+gene.annot.78958 <- gene.annot.78958[ !duplicated(gene.annot.78958$unique.ids) , ] # 21666    17
+expr.78958 <- expr.78958[
+  match(gene.annot.78958$unique.ids, row.names(expr.78958)) , ]
+all.equal(
+  row.names(expr.78958),
+  gene.annot.78958$unique.ids
+  )
+```
+
+# RUV-III-PRPS normalization
+here, we apply the RUV-III-PRPS normalization on the TCGA BRCA RNA-seq data.
+## negative control genes
+first, we select a appropriate set of negative control genes.
+### anova between genes and PAM50
+
+```{r}
+brca.se.cancer <- brca.se[ , index.cancer]
+brca.geneAnnot.ncg <- SummarizedExperiment::rowData(brca.se.cancer)
+brca.sampleAnnot.cancer <- as.data.frame(
+  SummarizedExperiment::colData(brca.se.cancer)
+)
+brca.fpkmUq.cancer <- SummarizedExperiment::assay(
+  brca.se.cancer, 
+  'HTseq_FPKM.UQ'
+  )
+brca.rawCounts.cancer <- SummarizedExperiment::assay(
+  brca.se.cancer, 
+  'HTseq_counts'
+  )
+### consensus PAM50 calls
+cols <- c(
+  'pam50.geneFu.fpkm',
+  'pam50.geneFu.fpkmUq'
+  )
+consensus.pam50.calls <- apply(
+  brca.sampleAnnot.cancer[ , cols, drop = FALSE],
+  1, 
+  function(x) length(unique(x))
+  )
+brca.sampleAnnot.cancer$pam50.consensus <- consensus.pam50.calls
+samples.to.use <- brca.sampleAnnot.cancer$pam50.consensus == 1
+sum(samples.to.use) # 981
+
+ncg.sample.info <- droplevels(brca.sampleAnnot.cancer[samples.to.use, ])
+ncg.sample.info$pam50 <- ncg.sample.info$pam50.geneFu.fpkm
+ncg.data <- brca.fpkmUq.cancer[ , samples.to.use]
+
+ftest.pam50 <- .Ftest(
+  data = ncg.data,
+  variable = ncg.sample.info$pam50,
+  is.log = FALSE, 
+  n.cores = 5
+  )
+brca.geneAnnot.ncg$pam50.de <- rank(ftest.pam50$FValue)
+```
+
+### anova between genes and pam50 within flow cell chemistery
+```{r }
+## within each FcCh
+ftest.pam50.FcCh <- lapply(
+  levels(ncg.sample.info$FcCh),
+  function(x){
+    index <- ncg.sample.info$FcCh == x
+    ftest.pam50 <- .Ftest(
+      data = ncg.data[ , index],
+      variable = ncg.sample.info$pam50[index],
+      is.log = FALSE,
+      n.cores = 5
+      )
+    })
+names(ftest.pam50.FcCh) <- levels(
+  ncg.sample.info$FcCh
+  )
+brca.geneAnnot.ncg$pam50.de.2010.11 <- rank(
+  ftest.pam50.FcCh$`2010:2011`$FValue
+  )
+brca.geneAnnot.ncg$pam50.de.2012.14 <- rank(
+  ftest.pam50.FcCh$`2012:2014`$FValue
+  )
+```
+
+### anova between genes and flowCell chemistry within pam50
+```{r}
+ftest.FcCh.PerPam50 <- lapply(
+  levels(ncg.sample.info$pam50), 
+  function(x){
+    index <- ncg.sample.info$pam50.erBalanced.FPKM.UQ == x
+    .Ftest(
+      data = ncg.data[, index],
+      variable = ncg.sample.info$FcCh[index],
+      is.log = FALSE,
+      n.cores = 5
+    )
+  })
+names(ftest.FcCh.PerPam50) <- paste0(
+  'FcCh_', 
+  levels(ncg.sample.info$pam50)
+  )
+for(i in names(ftest.FcCh.PerPam50) ){
+  index.na <- is.na(ftest.FcCh.PerPam50[[i]]$FValue)
+  ftest.FcCh.PerPam50[[i]]$FValue[index.na] <- 
+    mean(ftest.FcCh.PerPam50[[i]]$FValue, na.rm = TRUE)
+  brca.geneAnnot.ncg[, i] <- rank(-ftest.FcCh.PerPam50[[i]]$FValue)
+} 
+```
+
+### correlation between genes and tumour purity within PAM50
+```{r}
+ncg.sample.info$fch.pam50 <- paste(
+  ncg.sample.info$pam50, 
+  ncg.sample.info$FcCh, 
+  sep = '_'
+  )
+corr.gene.purity.per.pam50.fcch <- lapply(
+  unique(ncg.sample.info$fch.pam50), 
+  function(x){
+    index <- ncg.sample.info$fch.pam50 == x
+    .corr.gene.variable(
+      expr.data  = ncg.data[, index],
+      variable  = ncg.sample.info$purity_HTseq_FPKM[index],
+      is.log = FALSE,
+      method = 'spearman',
+      n.cores = 5, 
+      group = 'purity'
+    )
+  })
+names(corr.gene.purity.per.pam50.fcch) <- paste0(
+  'PurityCorr_', 
+  unique(ncg.sample.info$fch.pam50)
+  )
+for(i in names(corr.gene.purity.per.pam50.fcch) ){
+  index.na <- is.na(corr.gene.purity.per.pam50.fcch[[i]]$purity_rho)
+  corr.gene.purity.per.pam50.fcch[[i]]$purity_rho[index.na] <- 
+      mean(corr.gene.purity.per.pam50.fcch[[i]]$purity_rho, na.rm = TRUE)
+  brca.geneAnnot.ncg[, i] <- abs(corr.gene.purity.per.pam50.fcch[[i]]$purity_rho)
+} 
+```
+
+### correlation between genes and library size
+```{r}
+corr.gene.ls.ncg <- .corr.gene.variable(
+      expr.data  = brca.rawCounts.cancer,
+      variable  = brca.sampleAnnot.cancer$libSize,
+      is.log = FALSE,
+      method = 'spearman',
+      n.cores = 5, 
+      group = 'purity'
+    )
+brca.geneAnnot.ncg$corr.ls <- corr.gene.ls.ncg$purity_rho
+```
+
+### putting it all together
+```{r}
+### FsCh
+nGenes <- seq(500,14000, 500)
+ncg.set.FsCh <- lapply(
+  nGenes,
+  function(x){
+    ncg.set <- brca.geneAnnot.ncg$pam50.de.2010.11 < x &
+      brca.geneAnnot.ncg$FcCh_Her2 < x &
+      brca.geneAnnot.ncg$FcCh_Basal < x &
+      brca.geneAnnot.ncg$FcCh_LumA < x &
+      brca.geneAnnot.ncg$FcCh_LumB < x 
+    return(ncg.set)
+  })
+purity.corr <- .7
+ncg.set.purity <- lapply(
+  nGenes,
+  function(x){
+    ncg.set <- brca.geneAnnot.ncg$pam50.de.2010.11 < x &
+      brca.geneAnnot.ncg$`PurityCorr_LumB_2010:2011` > purity.corr &
+      brca.geneAnnot.ncg$`PurityCorr_LumA_2010:2011` > purity.corr &
+      brca.geneAnnot.ncg$`PurityCorr_Her2_2010:2011` > purity.corr &
+      brca.geneAnnot.ncg$`PurityCorr_Basal_2010:2011` > purity.corr 
+    return(ncg.set)
+  })
+ls.corr <- .7
+ncg.set.ls <- lapply(
+  nGenes,
+  function(x){
+    ncg.set <- brca.geneAnnot.ncg$pam50.de.2010.11 < x &
+      brca.geneAnnot.ncg$corr.ls > ls.corr 
+    return(ncg.set)
+  })
+
+all.ncg.sets <- lapply(
+  c(1:28), 
+  function(x){
+    ncg.set <- c(
+      brca.geneAnnot.ncg$gene_name.[ncg.set.ls[[x]]],
+      brca.geneAnnot.ncg$gene_name.[ncg.set.purity[[x]]],
+      brca.geneAnnot.ncg$gene_name.[ncg.set.FsCh[[x]]]
+    )
+  })
+length(all.ncg.sets[[20]]) # 4514
+```
+
+### pca on negative control genes
+```{r}
+pca.ncg <- .pca(
+  data = brca.rawCounts.cancer[
+  all.ncg.sets[[20]] , ], 
+  is.log = FALSE
+  )
+cols <- c(
+  'pam50.geneFu.fpkm',
+  'FcCh'
+)
+pam50.colors.b <- pam50.colors[2:6]
+name.cols <- c(
+  'PAM50', 
+  'Flow cell chemistry'
+  )
+colors <- c(
+  'pam50.colors.b', 
+  'FcCh.colors'
+  )
+lapply(
+  c(1:2), 
+  function(x){
+    # tiff(
+    #   paste0(
+    #     brca.fig.path,
+    #     'TCGA_BRCA_NCG_PCA_OnRawCountsColouredBy',
+    #     name.cols[x],
+    #     '.tiff'
+    #   ),
+    #   width = 6000,
+    #   height = 1400,
+    #   res = 400
+    # )
+    p <- .scatter.density.pc(
+      pcs = pca.ncg$sing.val$u[, 1:3],
+      pc.var = pca.ncg$variation,
+      group.name = name.cols[x],
+      group = brca.sampleAnnot.cancer[ , cols[x]],
+      color = base::get(colors[x]),
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .6
+    )
+    do.call(
+      gridExtra::grid.arrange,
+      c(p,
+        ncol = 4))
+    # dev.off()
+  })
+```
+
+## prps
+### prps set
+We create PRPS for library size, flow cell chemistries and tumour purity. 
+```{r}
+### Cancer sampl
+# Sample to use for PS
+samples.to.use <- brca.sampleAnnot.cancer$pam50.consensus == 1
+prps.brca <- .CreatePseudoSamplesForLsPurityBatch(
+  expr.data = brca.rawCounts.cancer[ , samples.to.use], 
+  sample.info = droplevels(brca.sampleAnnot.cancer[samples.to.use , ]), 
+  librarySize = 'libSize',
+  batch = 'PlateId_mda', 
+  biology ='pam50.geneFu.fpkmUq', 
+  purity =  'purity_HTseq_FPKM', 
+  include.ls = T, 
+  include.purity = TRUE, 
+  minSamplesPerBatchPS = 3,
+  minSamplesForPurityPerBiology = 12,
+  minSamplesForPurityPS = 3,
+  minSamplesForLibrarySizePerBatch = 12,
+  minSamplesForLibrarySizePS = 3
+  )
+```
+
+#### prps for plates\flow cell chemistery
+#####  map 
+```{r}
+ps.sample.info <- droplevels(
+  brca.sampleAnnot.cancer[brca.sampleAnnot.cancer$pam50.consensus == 1, ]
+  )
+new.info <- ps.sample.info
+new.info$new.batch <- paste0(
+  new.info$year_mda,
+  '_',
+  new.info$PlateId_mda
+  )
+new.info$biololy <- paste0(
+  new.info$pam50.geneFu.fpkm, 
+  '_',
+  new.info$msi.status)
+df_count <- new.info %>%
+    dplyr::count(new.batch, biololy)
+
+df_count$use <- 'unselected'
+df_count$use[df_count$n > 2] <- 'Selected'
+
+## plot
+# tiff(paste0(
+#   brca.fig.path,
+#   'TCGA_BRCA_PRPS_Map.tiff'),
+#   width = 3000,
+#   height = 3000,
+#   res = 400
+#   )
+ggplot(df_count, aes(x = new.batch, y = biololy)) +
+  geom_count(aes(color = use)) +
+  geom_text(aes(
+    label = n,
+    hjust = 0.5,
+    vjust = 0.5
+  )) +
+  xlab('Years-plates') +
+  ylab('Biological groups') +
+  theme_bw()+
+  theme(
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 0),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(
+      size = 10,
+      angle = 45,
+      hjust = 1
+    ),
+    axis.text.y = element_text(size = 18, angle = 65),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10),
+    legend.position = 'none'
+  )
+# dev.off() 
+```
+
+#####  library size
+```{r}
+ps.samples <- base::strsplit(
+  x = colnames(prps.brca$ps.batch),
+  split = '_'
+  )
+year <- lapply(
+  1:length(ps.samples),
+  function(x) {
+    index <- which(new.info$plate_RNAseq == ps.samples[[x]][2])
+    unique(new.info$year_mda[index])
+  })
+
+year.plate <- sapply(
+  1:length(ps.samples),
+  function(x) paste(
+    year[x],
+    ps.samples[[x]][2],
+    sep = '_'
+    )
+  )
+pam50 <- sapply(
+  ps.samples,
+  function(x) x[1]
+  )
+
+ps <- data.frame(
+  bio = pam50,
+  year.plate = year.plate,
+  ls = log2(colSums(prps.brca$ps.batch))
+  )
+## plot
+# tiff(paste0(
+#   brca.fig.path,
+#   'TCGA_BRCA_PRPS_ForBatch_LibrarySizeAcrossPlateYear.tiff'),
+#   width = 3500,
+#   height = 4500,
+#   res = 400
+#   )
+ggplot(ps, aes(x = year.plate, y = ls))  +
+  geom_point(size = 3) +
+  geom_line(aes(x = as.numeric(as.factor(year.plate)), y = ls)) +
+  xlab('Years_plates') +
+  ylim(c(24, 26.5)) +
+  ylab(expression(Log[2]~'library size')) +
+  facet_grid(bio ~.) +
+  theme(
+    axis.text.x = element_text(size = 15, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    strip.text.y = element_text(size = 20)
+    )
+# dev.off()
+```
+
+#### prps for library size per plate
+##### map
+```{r}
+ps.sample.info <- droplevels(
+  brca.sampleAnnot.cancer[brca.sampleAnnot.cancer$pam50.consensus == 1, ]
+  )
+new.info <- ps.sample.info
+new.info$new.batch <- paste0(
+  new.info$year_mda,
+  '_',
+  new.info$PlateId_mda
+  )
+new.info$biololy <- paste0(
+  new.info$pam50.geneFu.fpkm, 
+  '_',
+  new.info$msi.status)
+df_count <- new.info %>%
+    dplyr::count(new.batch, biololy)
+
+df_count$use <- 'unselected'
+df_count$use[df_count$n > 11] <- 'Selected'
+
+ggplot(df_count, aes(x = new.batch, y = biololy)) +
+  geom_count(aes(color = use)) +
+  geom_text(aes(
+    label = n,
+    hjust = 0.5,
+    vjust = 0.5
+  )) +
+  xlab('Years-plates') +
+  ylab('Biological groups') +
+  theme_bw()+
+  theme(
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 0),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(
+      size = 10,
+      angle = 45,
+      hjust = 1
+    ),
+    axis.text.y = element_text(size = 18, angle = 65),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10),
+    legend.position = 'none'
+  )
+```
+
+
+##### library size
+```{r}
+### ps for library size
+ps.ls.brca <- prps.brca$ps.ls 
+ps.samples <- base::strsplit(
+  x = colnames(ps.ls.brca), 
+  split = '_'
+  )
+plates <- sapply(
+  ps.samples, 
+  function(x) x[2]
+  )
+time.years <- vector()
+for(i in 1:length(plates)){
+  index <- grep(plates[i], brca.sampleAnnot.cancer$plate_RNAseq)
+  year <- unique(brca.sampleAnnot.cancer$year_mda[index])
+  time.years <- c(time.years, year)
+}
+colnames(ps.ls.brca) <- paste(
+  colnames(ps.ls.brca),
+  time.years,
+  sep = '_'
+)
+
+###
+samples <- colnames(ps.ls.brca)
+samples <- strsplit(
+  x = colnames(ps.ls.brca), 
+  split = '_'
+  )
+pam50 <- sapply(
+  samples, 
+  function(x) x[1]
+  )
+
+year.plate <- sapply(
+  samples, 
+  function(x) paste(x[4], x[2], sep = '_')
+  )
+ps <- data.frame(
+  bio = pam50, 
+  year.plate = year.plate, 
+  ls = log2(colSums(ps.ls.brca))
+  )
+
+# tiff(paste0(
+#   brca.fig.path,
+#   'TCGA_BRCA_PRPS_LibrarySizeAcrossPlateYear.tiff'),
+#   width = 2000,
+#   height = 4500,
+#   res = 400
+#   )
+ggplot(ps, aes(x = year.plate, y = ls))  +
+  geom_point(size = 3) +
+  geom_line(aes(x = as.numeric(as.factor(year.plate)), y = ls)) +
+  xlab('Years_plates') + 
+  ylim(c(24, 26.5)) +
+  ylab(expression(Log[2]~'library size')) +
+  facet_grid(bio ~.) +
+  theme(
+    axis.text.x = element_text(size = 15, angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    strip.text.y = element_text(size = 20)
+    )
+# dev.off()
+```
+
+#### prps for tumour purity
+##### purity differences
+
+```{r }
+### ps for purity
+ps.purity.brca <- prps.brca$ps.purity
+colnames(ps.purity.brca) <- paste(
+  colnames(ps.purity.brca), 
+  c('Low', 'High'), 
+  sep = '_'
+  )
+samples <- strsplit(
+  x = colnames(ps.purity.brca), 
+  split = '_'
+  )
+pam50 <- sapply(
+  samples, 
+  function(x) x[1]
+  )
+purity.status <- sapply(
+  samples, 
+  function(x) x[3]
+  )
+ps <- data.frame(
+  bio = pam50, 
+  purity.status = purity.status, 
+  ls = log2(colSums(ps.purity.brca))
+  )
+
+# tiff(paste0(
+#   brca.fig.path,
+#   'TCGA_BRCA_PRPS_ForPurity_LibrarySizeAcrossPlateYear.tiff'),
+#   width = 2000,
+#   height = 4500,
+#   res = 400
+#   )
+ggplot(ps, aes(x = purity.status, y = ls))  +
+  geom_point(size = 3) +
+  geom_line(aes(x = as.numeric(as.factor(purity.status)), y = ls)) +
+  xlab('Groups') + 
+  ylim(c(24, 26.5)) +
+  ylab(expression(Log[2]~'library size')) +
+  facet_grid(bio ~.) +
+  theme(
+    axis.text.x = element_text(size = 15, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    strip.text.y = element_text(size = 20)
+    )
+# dev.off()
+
+
+ps.purity.brca <- prps.brca$ps.purity
+ps.purity <- lapply(
+  levels(brca.sampleAnnot.cancer$pam50.geneFu.fpkm), 
+  function(x){
+    info <- brca.sampleAnnot.cancer[brca.sampleAnnot.cancer$pam50.consensus == 1 , ]
+    info <- info[info$pam50.geneFu.fpkm == x , ]
+    purity <- sort(info$purity_HTseq_FPKM)
+    high <- mean(purity[1:3])
+    low <- mean(purity[c(c(length(purity)- 2):length(purity)) ])
+    all <- c(low, high)
+    all
+  })
+names(ps.purity) <- levels(brca.sampleAnnot.cancer$pam50.geneFu.fpkm)
+ps.purity <- as.data.frame(ps.purity)
+ps.purity$purity <- c('High', 'Low')
+ps.purity <- ps.purity %>% 
+  tidyr::pivot_longer(-purity, names_to = 'Pam50', values_to = 'Pur') %>% 
+  data.frame(.)
+
+tiff(paste0(
+  brca.fig.path,
+  'TCGA_BRCA_PRPS_ForPurity_Score.tiff'),
+  width = 2000,
+  height = 4500,
+  res = 400
+  )
+ggplot(ps.purity, aes(x = purity, y = Pur))  +
+  geom_point(size = 3) +
+  geom_line(aes(x = as.numeric(as.factor(purity)), y = Pur)) +
+  xlab('Groups') + 
+  ylim(c(.22, .7)) +
+  ylab('Tumour purity socre') +
+  facet_grid(Pam50 ~.) +
+  theme(
+    axis.text.x = element_text(size = 15, hjust = 1),
+    axis.text.y = element_text(size = 15),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    strip.text.y = element_text(size = 20)
+    )
+dev.off()
+```
+
+## ruv-iii normalization
+```{r }
+prps.brca.ls <- prps.brca$ps.ls
+prps.brca.plates <- prps.brca$ps.batch
+prps.brca.purity <- prps.brca$ps.purity
+
+colnames(prps.brca.plates) <-  unlist(lapply(
+  colnames(prps.brca.plates),
+  function(x){
+    unlist(strsplit(x, '[_]'))[1]
+  }))
+table(colnames(prps.brca.plates))
+
+brca.ruv.input <- t(log2(cbind(
+  brca.rawCounts.cancer,
+  prps.brca.ls,
+  prps.brca.plates,
+  prps.brca.purity
+  ) + 1))
+dim(brca.ruv.input) # 1252 16537
+
+rep.matrix.ruv <- ruv::replicate.matrix(
+  row.names(brca.ruv.input)
+  )
+dim(rep.matrix.ruv) # 1252 1119
+
+
+ruviii.norm.spb  <- RUVIII_SPB(
+  Y = brca.ruv.input,
+  M = rep.matrix.ruv,
+  ctl = colnames(brca.ruv.input) %in% all.ncg.sets[[20]],
+  k = 12,
+  eta = NULL,
+  return.info = TRUE
+  )
+ruviii.prps.norm <- t(ruviii.norm.spb$newY[1:1086, ])
+```
+
+### pam50 subtyping
+```{r}
+pam50.ruv <- .pam50.geneFu(
+      expr.data = ruviii.prps.norm,
+      gene.annot = as.data.frame(SummarizedExperiment::rowData(brca.se))
+      )
+index.cancer <- which(brca.se$tissue == 'cancer')
+brca.se$pam50Genefu.ruv <- 'Adjacent normal'
+brca.se$pam50Genefu.ruv[index.cancer] <- as.character(pam50.ruv$subtype)
+brca.se$pam50Genefu.ruv[brca.se$pam50Genefu.ruv == 'Normal'] <- 'Normal like'
+brca.se$pam50Genefu.ruv <- factor(
+  brca.se$pam50Genefu.ruv,
+  levels = c(
+    'Basal', 
+    'Her2', 
+    'LumA', 
+    'LumB', 
+    'Normal like')
+  )
+```
+
+# Statistical summaries
+```{r}
+brca.cancer.se <- SummarizedExperiment::SummarizedExperiment(
+  assays = list(
+    HTseq_counts = log2(SummarizedExperiment::assay(
+      brca.se[ , index.cancer],
+      'HTseq_counts') + 1),
+    HTseq_FPKM = log2(SummarizedExperiment::assay(
+      brca.se[ , index.cancer],
+      'HTseq_FPKM') + 1),
+    HTseq_FPKM.UQ = log2(SummarizedExperiment::assay(
+      brca.se[ , index.cancer],
+      'HTseq_FPKM.UQ') + 1),
+    RUV_III = ruviii.prps.norm
+    ),
+  colData = droplevels(S4Vectors::DataFrame(
+    SummarizedExperiment::colData(brca.se[ , index.cancer]))),
+  rowData = as.data.frame(
+    SummarizedExperiment::rowData(brca.se))
+  )
+all.data <- list(
+  brca.cancer.se = brca.cancer.se,
+  raw.counts = SummarizedExperiment::assay(
+    brca.se[ , index.cancer], 
+    'HTseq_counts'),
+  ncg = all.ncg.sets[[20]]
+  )
+# saveRDS(
+#   object = all.data,
+#   file = paste0(
+#     brca.data.path,
+#     'TCGA_BRCA_RNAseq_ProcessedData_ForReproducibility_RMolania2021.rds')
+#   )
+```
+
+## PCA
+### across all samples
+```{r}
+normalizations <- names(
+  SummarizedExperiment::assays(brca.cancer.se)
+  )
+pca.all <- lapply(
+  normalizations,
+  function(x){
+    .pca(
+      data = as.matrix(
+        SummarizedExperiment::assay(brca.cancer.se, x)
+        ),
+      is.log = TRUE)
+  })
+names(pca.all) <- normalizations
+```
+
+### within pam50 subtypes
+```{r}
+genefu.calls <- c(
+  'pam50.geneFu.raw',
+  'pam50.geneFu.fpkm',
+  'pam50.geneFu.fpkmUq',
+  'pam50Genefu.ruv'
+  )
+pca.pam50Genefu <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    pca.all <- lapply(
+      c(1:4),
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se
+          )[ , genefu.calls[y]] == x
+        .pca(
+          data = as.matrix(
+            SummarizedExperiment::assay(
+              brca.cancer.se[ , index], 
+              normalizations[y])
+            ),
+          is.log = TRUE)
+    })
+    names(pca.all) <- normalizations
+    pca.all
+  })
+names(pca.pam50Genefu) <- levels(brca.cancer.se$pam50.geneFu.fpkmUq)
+```
+
+## RLE
+### across all samples
+```{r}
+rle.all <- lapply(
+  normalizations,
+  function(x){
+    .rle.comp(
+      expr.data = as.matrix(
+        SummarizedExperiment::assay(
+          brca.cancer.se, x)
+        ),
+      is.log = TRUE
+      )
+    })
+names(rle.all) <- normalizations
+```
+
+### within pam50 subtypes 
+```{r}
+rle.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    rle.all <- lapply(
+      c(1:4),
+      function(y){
+          index <- SummarizedExperiment::colData(
+          brca.cancer.se
+          )[ , genefu.calls[y]] == x
+        .rle.comp(
+          expr.data = as.matrix(
+            SummarizedExperiment::assay(
+              brca.cancer.se[, index], 
+              normalizations[y])
+            ),
+          is.log = TRUE)
+      })
+    names(rle.all) <- tcga.harmonized
+    rle.all
+  })
+names(rle.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+## ANOVA 
+### genes and flow cell chemistry
+#### across all data
+```{r}
+
+ftest.fcch.all <- lapply(
+  normalizations,
+  function(x){
+    .Ftest(
+      data = as.matrix(SummarizedExperiment::assay(
+        brca.cancer.se, 
+        x)
+        ),
+      variable = brca.cancer.se$FcCh,
+      is.log = TRUE,
+      n.cores = 5
+      )
+  })
+names(ftest.fcch.all) <- normalizations
+```
+
+#### within pam50 subtypes
+```{r}
+ftest.fcch.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    ftest.fcch.pam50 <- lapply(
+      c(1:4),
+      function(y){
+         index <- SummarizedExperiment::colData(
+          brca.cancer.se
+          )[ , genefu.calls[y]] == x
+        .Ftest(
+          data = as.matrix(
+            SummarizedExperiment::assay(
+              brca.cancer.se[ , index], 
+              y)),
+          variable = brca.cancer.se$FcCh[index],
+          is.log = TRUE,
+          n.cores = 5
+          )
+      })
+    names(ftest.fcch.pam50) <- normalizations
+    ftest.fcch.pam50
+  })
+names(ftest.fcch.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+### genes and plates
+#### across all samples
+```{r}
+### Cancer samples
+ftest.plate.all <- lapply(
+  normalizations,
+  function(x){
+    .Ftest(
+      data = as.matrix(SummarizedExperiment::assay(brca.cancer.se, x)),
+      variable = brca.cancer.se$plate_RNAseq ,
+      is.log = TRUE,
+      n.cores = 5
+      )
+  })
+names(ftest.plate.all) <- normalizations
+```
+
+#### within pam50 subtypes
+```{r}
+ftest.plate.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    ftest.plate.pam50 <- lapply(
+      c(1:4),
+      function(y){
+           index <- SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[y]] == x
+        .Ftest(
+          data = as.matrix(
+            SummarizedExperiment::assay(
+              brca.cancer.se[ , index], 
+              normalizations[y])),
+          var = brca.cancer.se$plate_RNAseq[index],
+          is.log = TRUE,
+          n.cores = 8
+          )
+      })
+    names(ftest.plate.pam50) <- normalizations
+    ftest.plate.pam50
+  })
+names(ftest.plate.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+## Correlations
+### genes and library size  
+#### across all samples
+```{r}
+## Cancer samples
+corr.geneLs.all <- lapply(
+  normalizations,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(
+        SummarizedExperiment::assay(brca.cancer.se, x)
+        ),
+      is.log = TRUE,
+      variable = brca.cancer.se$libSize,
+      method = 'spearman',
+      n.cores = 5,
+      group = 'ls'
+      )
+    })
+names(corr.geneLs.all) <- normalizations
+```
+
+#### within pam50 subtypes
+```{r}
+corr.geneLs.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    corr.all <- lapply(
+      c(1:4),
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[y]] == x
+        .corr.gene.variable(
+          expr.data = as.matrix(
+            SummarizedExperiment::assay(
+              brca.cancer.se[, index], 
+              normalizations[y])
+            ),
+          is.log = TRUE,
+          variable  = brca.cancer.se$libSize[index],
+          n.cores = 5,
+          method = 'spearman',
+          group = 'ls')
+      })
+    names(corr.all) <- normalizations
+    corr.all
+  })
+names(corr.geneLs.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+### genes and purity  
+#### across all samples
+```{r}
+## Cancer samples
+corr.genePurity.cancer.all <- lapply(
+  normalizations,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(brca.cancer.se, x)),
+      is.log = TRUE,
+      var = brca.cancer.se$purity_HTseq_FPKM,
+      method = 'spearman',
+      n.cores = 5,
+      group = 'purity'
+      )
+    })
+names(corr.genePurity.cancer.all) <- normalizations
+```
+
+#### within pam50 subtypes 
+```{r}
+corr.genePurity.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    corr.all <- lapply(
+      c(1:4),
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[y]] == x
+        .corr.gene.variable(
+          expr.data = as.matrix(
+            SummarizedExperiment::assay(
+              brca.cancer.se[, index], 
+              normalizations[y])
+            ),
+          is.log = TRUE,
+          variable  = brca.cancer.se$purity_HTseq_FPKM.UQ[index],
+          n.cores = 8,
+          method = 'spearman',
+          group = 'purity')
+      })
+    names(corr.all) <- normalizations
+    corr.all
+  })
+names(corr.genePurity.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+#### pair-wise correlation
+```{r}
+### gene selection
+purity.genes <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    index <- corr.genePurity.pam50Genefu.all[[x]]$HTseq_FPKM.UQ$purity_rho < -.6
+    corr.genePurity.pam50Genefu.all[[x]]$HTseq_FPKM.UQ$purity_genes[index]
+  })
+purity.genes <- unique(unlist(purity.genes))
+length(purity.genes) # 1263 genes
+
+### pair-wise correlation
+pair.wise.purityGenes <- combn(
+  purity.genes, 
+  2
+  )
+plan("multiprocess", workers = 8)
+corr.genePurity.pairWise.all <- lapply(
+  normalizations[c(3:4)], 
+  function(y){
+    t.data <- t(SummarizedExperiment::assay(
+      brca.cancer.se[purity.genes , ], 
+      y))
+    # corr.coef <- parallel::mclapply(
+    #   c(1:100000),
+    #   function(x) {
+    #     gene <- pair.wise.purityGenes[, x]
+    #     cor.test(
+    #       t.data[, gene[1]],
+    #       t.data[, gene[2]],
+    #       method = 'spearman')[[4]]
+    #   },
+    #   mc.cores = 5)
+    corr.coef <- future.apply::future_lapply(
+      c(1:ncol(pair.wise.purityGenes)),
+      function(x) {
+        gene <- pair.wise.purityGenes[, x]
+        cor.test(
+          t.data[, gene[1]],
+          t.data[, gene[2]],
+          method = 'spearman')[[4]]
+      })
+    return(round(unlist(corr.coef), digits = 1))
+  })
+names(corr.genePurity.pairWise.all) <- normalizations[c(3:4)]
+plan(sequential)
+```
+
+#### partial pair-wise correlation
+```{r}
+plan("multiprocess", workers = 8)
+purity <- brca.cancer.se$purity_HTseq_FPKM.UQ
+corr.genePurity.partialPairWise.all <- lapply(
+  normalizations[c(3:4)], 
+  function(y){
+    t.data <- t(SummarizedExperiment::assay(
+      brca.cancer.se[purity.genes , ], 
+      y))
+    # corr.coef <- parallel::mclapply(
+    #   c(1:ncol(pair.wise.purityGenes)),
+    #   function(x) {
+    #     gene <- pair.wise.purityGenes[, x]
+    #     ppcor::pcor.test(
+    #       t.data[, gene[1]],
+    #       t.data[, gene[2]],
+    #       brca.cancer.se$purity_HTseq_FPKM.UQ,
+    #       method = 'spearman')$estimate
+    #   },
+    #   mc.cores = 5)
+    # return(round(unlist(corr.coef), digits = 1))
+    corr.coef <- future.apply::future_lapply(
+      c(1:ncol(pair.wise.purityGenes)),
+      function(x) {
+        gene <- pair.wise.purityGenes[, x]
+        ppcor::pcor.test(
+          x = t.data[, gene[1]],
+          y = t.data[, gene[2]],
+          z = purity,
+          method = 'spearman')$estimate
+      })
+    return(round(unlist(corr.coef), digits = 1))
+  })
+names(corr.genePurity.partialPairWise.all) <- normalizations[c(3:4)]
+plan(sequential)
+```
+
+### genes and rleMed
+#### across all samples
+```{r}
+### Cancer samples
+corr.geneMedRLe.all <- lapply(
+  normalizations,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(brca.cancer.se, x)),
+      is.log = TRUE,
+      var = rle.all[[x]]$rle.med,
+      method = 'spearman',
+      n.cores = 5,
+      group = 'RleMed'
+      )
+    })
+names(corr.geneMedRLe.all) <- normalizations
+```
+
+#### within pam50 subtypes
+```{r}
+corr.geneMedRLE.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    corr.all <- lapply(
+      c(1:4),
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[y]] == x
+        .corr.gene.variable(
+          expr.data = as.matrix(
+            SummarizedExperiment::assay(
+              brca.cancer.se[, index], 
+              normalizations[y])
+            ),
+          is.log = TRUE,
+          method = 'spearman',
+          variable  = rle.pam50Genefu.all[[x]][[y]]$rle.med,
+          n.cores = 11,
+          group = 'RleMed')
+      })
+    names(corr.all) <- normalizations
+    corr.all
+  })
+names(corr.geneMedRLE.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+### genes and flow cell chimstery
+#### pair-wise correlation
+```{r}
+batch.gene.signature <- ftest.fcch.all$HTseq_FPKM.UQ$FValue > 200
+sum(batch.gene.signature) # 1039
+batch.gene.signature <- ftest.fcch.all$HTseq_FPKM.UQ$Genes[
+  batch.gene.signature]
+pair.wise.fcchGenes <- combn(
+  batch.gene.signature, 
+  2
+  )
+
+## pair-wise
+plan("multiprocess", workers = 8)
+corr.geneBatchScore.pairWise.all <- lapply(
+  normalizations[c(3:4)], 
+  function(y){
+    t.data <- t(SummarizedExperiment::assay(
+      brca.cancer.se[batch.gene.signature , ], 
+      y))
+    corr.coef <- future.apply::future_lapply(
+      c(1:ncol(pair.wise.fcchGenes)),
+      function(x) {
+        gene <- pair.wise.fcchGenes[, x]
+        cor.test(
+          t.data[, gene[1]],
+          t.data[, gene[2]],
+          method = 'spearman')[[4]]
+      })
+    return(round(unlist(corr.coef), digits = 1))
+  })
+names(corr.geneBatchScore.pairWise.all) <- normalizations[c(3:4)]
+plan(sequential)
+```
+
+## Canonical correlation analysis
+### pam50
+#### across all samples
+```{r}
+cca.pam50Genefu.all <- lapply(
+  c(1:4), 
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u
+    pam50Genefu.dummies <- fastDummies::dummy_cols(
+      SummarizedExperiment::colData(brca.cancer.se)[, genefu.calls[x] ]
+      )
+    pam50Genefu.dummies <- pam50Genefu.dummies[, c(2:ncol(pam50Genefu.dummies))]
+  sapply(
+    1:10,
+    function(y){
+      cca.pam50 <- stats::cancor(
+        x = pcs[, 1:y, drop = FALSE],
+        y = pam50Genefu.dummies)
+      1 - prod(1 - cca.pam50$cor^2)
+    })
+  })
+names(cca.pam50Genefu.all) <- normalizations
+```
+
+### flow cell chemistry
+#### across all samples
+```{r}
+### cancer samples
+fcch.dummies <- fastDummies::dummy_cols(brca.cancer.se$FcCh)
+fcch.dummies <- fcch.dummies[, c(2:ncol(fcch.dummies))]
+cca.fcch.all <- lapply(
+  normalizations, 
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u
+  sapply(
+    1:10,
+    function(y){
+      cca.fcch <- stats::cancor(
+        x = pcs[, 1:y, drop = FALSE],
+        y = fcch.dummies)
+      1 - prod(1 - cca.fcch$cor^2)
+    })
+  })
+names(cca.fcch.all) <- normalizations
+```
+
+#### within pam50 subtypes
+```{r}
+cca.fcch.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq), 
+  function(x){
+    cca.fcch.pam50 <- lapply(
+      c(1:4), 
+      function(y){
+          index <- SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[y]] == x
+          fcch.dummies <- fastDummies::dummy_cols(brca.cancer.se$FcCh[index])
+          fcch.dummies <- fcch.dummies[, c(2:ncol(fcch.dummies))]
+        pcs <- pca.pam50Genefu[[x]][[y]]$sing.val$u
+        sapply(
+          1:10, 
+          function(z){
+            cca.fcch <- stats::cancor(
+              x = pcs[, 1:z, drop = FALSE],
+              y = fcch.dummies)
+             1 - prod(1 - cca.fcch$cor^2)
+          })
+      })
+    names(cca.fcch.pam50) <- normalizations
+    cca.fcch.pam50
+  })
+names(cca.fcch.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+### plates
+#### across all samples
+```{r}
+### cancer samples
+plate.dummies <- fastDummies::dummy_cols(brca.cancer.se$plate_RNAseq)
+plate.dummies <- plate.dummies[, c(2:ncol(plate.dummies))]
+
+cca.plate.all <- lapply(
+  normalizations, 
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u
+  sapply(
+    1:10,
+    function(y){
+      cca.fcch <- stats::cancor(
+        x = pcs[, 1:y, drop = FALSE],
+        y = plate.dummies)
+      1 - prod(1 - cca.fcch$cor^2)
+    })
+  })
+names(cca.plate.all) <- normalizations
+```
+
+#### within pam50 subtypes 
+```{r}
+### Within PAM50 - Genefu calls
+cca.plate.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq), 
+  function(x){
+    cca.plate.pam50 <- lapply(
+      c(1:3), 
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[y]] == x
+        plate.dummies <- fastDummies::dummy_cols(brca.cancer.se$plate_RNAseq[index])
+        plate.dummies <- plate.dummies[, c(2:ncol(plate.dummies))]
+        pcs <- pca.pam50Genefu[[x]][[y]]$sing.val$u
+        sapply(
+          1:nPCs, 
+          function(z){
+            cca.plate <- stats::cancor(
+              x = pcs[, 1:z, drop = FALSE],
+              y = plate.dummies)
+             1 - prod(1 - cca.plate$cor^2)
+          })
+      })
+    names(cca.plate.pam50) <- tcga.harmonized
+    cca.plate.pam50
+  })
+names(cca.plate.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+## Linear regression
+### pcs and library size
+#### across all samples
+```{r}
+lreg.ls.all <- lapply(
+  normalizations,
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u
+    tcga.ls.rSquared <- sapply(
+      1:10,
+      function(y) {
+        lm.ls <- summary(lm(brca.cancer.se$libSize ~ pcs[, 1:y]))$r.squared
+    })
+  })
+names(lreg.ls.all) <- normalizations
+```
+
+#### within pam50 subtypes 
+```{r}
+lreg.ls.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    ls.reg <- lapply(
+      c(1:4), 
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[y]] == x
+        pcs <- pca.pam50Genefu[[x]][[y]]$sing.val$u
+        tcga.pam50.ls <- sapply(
+          1:10, 
+          function(z){
+            lm.ls <- summary(lm(brca.cancer.se$libSize[index] ~ pcs[, 1:z]))$r.squared
+            lm.ls
+          })
+      })
+    names(ls.reg) <- normalizations
+    ls.reg
+  })
+names(lreg.ls.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+### pcs and purity
+#### across all samples
+```{r}
+lreg.purity.all <- lapply(
+  normalizations, 
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u
+    ls.rSquared <- sapply(
+      1:10,
+      function(y) {
+        lm.ls <- summary(lm(brca.cancer.se$purity_HTseq_FPKM.UQ ~ pcs[, 1:y]))$r.squared
+    })
+  })
+names(lreg.purity.all) <- normalizations
+```
+
+#### within pam50 subtypes
+```{r}
+lreg.purity.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    purity.reg <- lapply(
+      c(1:4), 
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[y]] == x
+        pcs <- pca.pam50Genefu[[x]][[y]]$sing.val$u
+        pam50.purity <- sapply(
+          1:10, 
+          function(z){
+            lm.purity <- summary(lm(
+              brca.cancer.se$purity_HTseq_FPKM.UQ[index] ~ pcs[, 1:z])
+              )$r.squared
+            lm.purity
+          })
+      })
+    names(purity.reg) <- normalizations
+    purity.reg
+  })
+names(lreg.purity.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+## Differential expression analysis
+### low and high library size
+#### within pam50 subtypes
+
+```{r}
+brca.cancer.se$ls.status <- ifelse(
+  brca.cancer.se$libSize > median(brca.cancer.se$libSize),
+  'high', 
+  'low'
+  )
+de.ls.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    de <- lapply(
+      c(1:4),
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se
+          )[ , genefu.calls[y]] == x
+        data <- as.matrix(SummarizedExperiment::assay(
+          brca.cancer.se[ , index], 
+          normalizations[y])
+          )
+        .wilcoxon.test(
+          expr.data = data,
+          is.log = TRUE,
+          variable = brca.cancer.se$ls.status[index],
+          n.cores = 6)
+      })
+    names(de) <- normalizations
+    de
+  })
+names(de.ls.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+### low and high purity
+#### within pam50 subtypes 
+
+```{r}
+brca.cancer.se$purity.status <- ifelse(
+  brca.cancer.se$purity_HTseq_FPKM > median(brca.cancer.se$purity_HTseq_FPKM),
+  'high', 
+  'low'
+  )
+
+de.purity.pam50Genefu.all <- lapply(
+  levels(brca.cancer.se$pam50.geneFu.fpkmUq),
+  function(x){
+    de <- lapply(
+      c(1:4),
+      function(y){
+        index <- SummarizedExperiment::colData(
+          brca.cancer.se
+          )[ , genefu.calls[y]] == x
+        data <- as.matrix(SummarizedExperiment::assay(
+          brca.cancer.se[ , index], 
+          normalizations[y])
+          )
+        .wilcoxon.test(
+          expr.data = data,
+          is.log = FALSE,
+          variable = brca.cancer.se$purity.status[index],
+          n.cores = 6)
+      })
+    names(de) <- normalizations
+    de
+  })
+names(de.purity.pam50Genefu.all) <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+```
+
+### fcch
+#### within pam50 subtypes
+```{r}
+de.fcch.pam50Genefu.tcga <- lapply(
+  levels(brca.sampleAnnot.cancer$pam50.geneFu.fpkmUq),
+  function(x){
+    de <- lapply(
+      c(1:3),
+      function(y){
+        index <- brca.sampleAnnot.cancer[[genefu.calls[y]]] == x
+        data <- as.matrix(SummarizedExperiment::assay(brca.se.cancer[ , index], tcga.harmonized[y]))
+        .wilcoxon.test(
+          expr.data = data,
+          is.log = FALSE,
+          variable = brca.sampleAnnot.cancer$FcCh[index],
+          n.cores = 5)
+      })
+    names(de) <- tcga.harmonized
+    de
+  })
+names(de.fcch.pam50Genefu.tcga) <- levels(brca.sampleAnnot.cancer$pam50.geneFu.fpkmUq)
+```
+
+
+## Silhouette coefficient analysis
+### pcs and plates
+#### across all samples
+```{r}
+### Cancer samples
+silCoef.plate.all <- lapply(
+  normalizations,
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.all[[x]]$sing.val$u,
+      variable  = brca.cancer.se$plate_RNAseq,
+      nPCs = 3)
+    })
+names(silCoef.plate.all) <- normalizations
+```
+
+#### within pam50 subtypes 
+```{r}
+silCoef.plate.pam50Genefu.all <- lapply(
+  levels(brca.sampleAnnot.cancer$pam50.geneFu.fpkmUq)[1:4], 
+  function(x){
+    silCoef.plate.pam50 <- lapply(
+      c(1:3),
+      function(y){
+        index <- brca.sampleAnnot.cancer[[genefu.calls[y]]] == x
+        .silhouette.coeff(
+          pcs = pca.pam50Genefu.tcga[[x]][[y]]$sing.val$u,
+          variable = brca.sampleAnnot.cancer$plate_RNAseq[index],
+          nPCs = 3)
+    })
+    names(silCoef.plate.pam50) <- tcga.harmonized
+    silCoef.plate.pam50
+  })
+names(silCoef.plate.pam50Genefu.tcga) <- levels(brca.sampleAnnot.cancer$pam50.geneFu.fpkmUq)[1:4]
+```
+
+### pcs and flow cell chemistery
+#### across all samples
+```{r}
+### Cancer samples
+silCoef.fcch.all <- lapply(
+  normalizations,
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.all[[x]]$sing.val$u,
+      variable  = brca.cancer.se$FcCh,
+      nPCs = 3)
+    })
+names(silCoef.fcch.all) <- normalizations
+```
+
+#### within pam50 subtypes 
+```{r}
+silCoef.fcch.cancer.pam50Genefu.tcga <- lapply(
+  levels(brca.sampleAnnot.cancer$pam50.geneFu.fpkmUq)[1:4], 
+  function(x){
+    silCoef.fcch.pam50 <- lapply(
+      c(1:3),
+      function(y){
+        index <- brca.sampleAnnot.cancer[[genefu.calls[y]]] == x
+        .silhouette.coeff(
+          pcs = pca.pam50Genefu.tcga[[x]][[y]]$sing.val$u,
+          variable = brca.sampleAnnot.cancer$FcCh[index],
+          nPCs = 3)
+    })
+    names(silCoef.fcch.pam50) <- tcga.harmonized
+    silCoef.fcch.pam50
+  })
+names(silCoef.fcch.cancer.pam50Genefu.tcga) <- levels(brca.sampleAnnot.cancer$pam50.geneFu.fpkmUq)[1:4]
+```
+
+### pam50
+#### across all samples
+```{r}
+silCoef.pam50Genefu.all <- lapply(
+  c(1:4),
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.all[[x]]$sing.val$u,
+      variable = SummarizedExperiment::colData(
+          brca.cancer.se)[ , genefu.calls[x]],
+      nPCs = 3)
+    })
+names(silCoef.pam50Genefu.all) <- normalizations
+```
+
+## ARI 
+### pcs and pam50
+#### across all samples
+```{r}
+### Cancer samples - TCGA calls
+set.seed(2012190737)
+ari.pam50Genefu.all <- lapply(
+  c(1:4),
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u[,1:3]
+    BIC <- mclust::mclustBIC(data = pcs)
+    mod <- mclust::Mclust(data = pcs, x = BIC, G = 5)
+    mclust::adjustedRandIndex(
+      mod$classification, 
+      SummarizedExperiment::colData(brca.cancer.se)[, genefu.calls[x]]
+      )
+    })
+names(ari.pam50Genefu.all) <- normalizations
+```
+
+### flow cell chemistry
+#### across all samples
+
+```{r}
+set.seed(2012190737)
+ari.fcch.all <- lapply(
+  normalizations,
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u[,1:3]
+    BIC <- mclust::mclustBIC(data = pcs)
+    mod <- mclust::Mclust(data = pcs, x = BIC, G = 2)
+    mclust::adjustedRandIndex(
+      mod$classification,
+      brca.cancer.se$FcCh
+      )
+    })
+names(ari.fcch.all) <- normalizations
+```
+
+
+### tumour purity scores
+```{r}
+purity.gene.sig <- brca.geneAnnot$stromal == 'yes' |
+  brca.geneAnnot$immnue == 'yes'
+purity.gene.sig <- row.names(brca.fpkm.uq)[purity.gene.sig]
+
+row.names(brca.ruv) <- brca.geneAnnot$gene_name.
+rankDatas.tcag <- singscore::rankGenes(brca.ruv)
+purity.score.tcga <- singscore::simpleScore(
+  rankData = rankDatas.tcag, 
+  upSet = purity.gene.sig,
+  centerScore = F
+  )
+```
+
+## Survival
+### pam50
+```{r}
+### TCGA FPKM.UQ
+new.info <- brca.sampleAnnot.cancer[ , c('OS.time_liu', 'OS_liu')]
+index <- complete.cases(new.info)
+new.info <- new.info[ index, ]
+surv.gene.tcga <- lapply(
+  c(1:nrow(brca.fpkm)), 
+  function(x){
+    new.info$gene <- 'low'
+    new.info$gene[brca.fpkm.cancer[x, index] >= median(brca.fpkm.cancer[x, index] )] <- 'high'
+    if(length(unique(new.info$gene)) == 2){
+      fit <- survdiff(Surv(OS.time_liu, OS_liu) ~ gene, data = new.info)
+      ifelse (is.na(fit),
+            next,
+            (round(1 - pchisq(
+              fit$chisq, length(fit$n) - 1
+            ), 6)))[[1]]
+    }else{
+      'NA'
+    }
+  })
+brca.tcga.stat.summaries <- readRDS(
+  file = paste0(
+    brca.data.path, 
+    'TCGA_BRCA_AllStatisticalSummaries_ForPaper.rds')
+  )
+```
+
+## Purity estimates
+### across all samples
+```{r}
+purity.gene.sig <- 
+  SummarizedExperiment::rowData(brca.cancer.se)$stromal == 'yes' |
+  SummarizedExperiment::rowData(brca.cancer.se)$immnue == 'yes'
+
+purity.estimates <- lapply(
+  normalizations[c(3:4)], 
+  function(x){
+    rank.data <- singscore::rankGenes(
+      as.matrix(SummarizedExperiment::assay(
+        brca.cancer.se,
+        x)))
+    singscore::simpleScore( 
+      rankData = rank.data,
+      upSet = row.names(brca.cancer.se)[purity.gene.sig],
+      centerScore = F
+      )$TotalScore
+    
+  })
+names(purity.estimates) <- c('FPKM.UQ', 'RUV-III')
+```
+
+## Unknown batches
+#### flow cell chemistry gene signature
+##### selection of signatures
+```{r}
+### Batch gene signatures
+fcch.gene.signature <- ftest.fcch.all$HTseq_FPKM.UQ$FValue > 300
+sum(fcch.gene.signature) # 367
+fcch.gene.signature <- ftest.fcch.all$HTseq_FPKM.UQ$Genes[fcch.gene.signature]
+```
+
+##### scoring samples
+```{r }
+fcch.scores <- lapply(
+  normalizations[c(3:4)], 
+  function(x){
+    rank.data <- singscore::rankGenes(
+      as.matrix(SummarizedExperiment::assay(
+      brca.cancer.se, 
+      x))
+      )
+    singscore::simpleScore( 
+      rankData = rank.data,
+      upSet = fcch.gene.signature
+      )
+  })
+names(fcch.scores) <- normalizations[c(3:4)]
+```
+
+##### clustering of the scores
+```{r }
+g1 <- fcch.scores$HTseq_FPKM.UQ$TotalScore < .025
+g4 <- fcch.scores$HTseq_FPKM.UQ$TotalScore > .17
+g3 <- fcch.scores$HTseq_FPKM.UQ$TotalScore <= .17 & 
+  fcch.scores$HTseq_FPKM.UQ$TotalScore > .12
+brca.cancer.se$sub.batches <- 'group2'
+brca.cancer.se$sub.batches[g1] <- 'group1'
+brca.cancer.se$sub.batches[g4] <- 'group4'
+brca.cancer.se$sub.batches[g3] <- 'group3'
+brca.cancer.se$sub.batches <- factor(
+  brca.cancer.se$sub.batches,
+  levels = c(
+    'group1', 
+    'group2', 
+    'group3', 
+    'group4')
+  )
+```
+
+##### correlation between genes and scores
+```{r}
+corr.geneFcchScores <- lapply(
+  normalizations[c(3:4)], 
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(brca.cancer.se, x)),
+      is.log = TRUE,
+      variable = fcch.scores[[x]]$TotalScore,
+      method = 'spearman',
+      n.cores = 11,
+      group = 'fcch.score'
+    )
+})
+names(corr.geneFcchScores) <- normalizations[c(3:4)]
+```
+
+# Normalization assessments
+## Library size effects
+### pcs and libray size linear regression
+#### across all samples
+```{r}
+pcs.ls.lnreg <- as.data.frame(lreg.ls.all) %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III
+  ) %>% 
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'r.sq') %>% 
+  dplyr::mutate(
+    datasets = factor(
+      datasets, 
+      levels = c(
+        'Raw counts', 
+        'FPKM', 
+        'FPKM.UQ', 
+        'RUV-III'))
+    )
+### Plots
+ggplot(pcs.ls.lnreg, aes(x = pcs, y = r.sq, group = datasets)) +
+  geom_line(aes(color = datasets), size = 1) + 
+  geom_point(aes(color = datasets), size = 3) + 
+  xlab('PCs') + 
+  ylab (expression("R"^"2")) +
+  scale_color_manual(
+    values = dataSets.colors, 
+    labels = c(
+      'Raw counts', 
+      'FPKM',
+      'FPKM.UQ', 
+      'RUV-III'), 
+    guide = 'none') +
+  scale_x_continuous(
+    breaks = (1:10), 
+    labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(
+    breaks = scales::pretty_breaks(n = 5), 
+    limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+```
+
+#### within pam50
+
+```{r }
+pam50.level <- levels(
+  brca.cancer.se$pam50.geneFu.fpkmUq
+  )
+pcs.ls.lnreg.pam50 <- lapply(
+  pam50.level, 
+  function(x){
+    r.seq <- lapply(
+      normalizations,
+      function(y){
+      lreg.ls.pam50Genefu.all[[x]][[y]]
+      }) 
+    names(r.seq) <- paste(normalizations, x, sep = '__')
+    do.call(cbind, r.seq)
+  })
+names(pcs.ls.lnreg.pam50) <- pam50.level
+pcs.ls.lnreg.pam50 <- do.call(cbind, pcs.ls.lnreg.pam50) %>% 
+  data.frame(.) %>% 
+  dplyr::mutate(pcs = c(1:10)) %>% 
+  tidyr::pivot_longer(
+    -c(pcs),
+    names_to = 'datasets',
+    values_to = 'r.sq') %>% 
+  tidyr::separate(
+    col = datasets, 
+    sep ='__', 
+    into = c('datasets', 'pam50' )) %>%
+  data.frame(.) %>% 
+  dplyr::mutate(
+    type = recode(
+      datasets,
+      'HTseq_counts' = 'Raw counts',
+      'HTseq_FPKM' = 'FPKM',
+      'HTseq_FPKM.UQ' ='FPKM.UQ',
+      'RUV_III' = 'RUV-III'
+  ))
+  
+### Plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_LibrraySize_LinearRegressionPerPam50.tiff'),
+#     width = 1500,
+#     height = 3000,
+#     res = 400
+#     )
+ggplot(pcs.ls.lnreg.pam50 , aes(x = pcs, y = r.sq)) +
+  geom_line(aes(color = type)) +
+  geom_point(aes(color = type)) +
+  xlab('PCs') +
+  ylab (expression('R'^'2')) +
+  scale_color_manual(values = dataSets.colors) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  facet_grid(pam50~.) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10),
+    legend.position = 'bottom', 
+    strip.text = element_text(size = 14)) +
+    guides(col = guide_legend(nrow = 2))
+# dev.off()
+```
+
+### correlation between genes and library size
+#### within pam50
+```{r}
+corr.geneLs.pam50Genefu <- lapply(
+  pam50.level, 
+  function(x){
+    r.seq <- lapply(
+      normalizations,
+      function(y){
+      corr.geneLs.pam50Genefu.all[[x]][[y]]$ls_rho
+      }) 
+    names(r.seq) <- paste(normalizations, x, sep = '__')
+    do.call(cbind, r.seq)
+  })
+names(corr.geneLs.pam50Genefu) <- pam50.level
+corr.geneLs.pam50Genefu <- do.call(cbind, corr.geneLs.pam50Genefu) %>% 
+  data.frame(.) %>% 
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'datasets',
+    values_to = 'corr.coef') %>% 
+  tidyr::separate(
+    col = datasets, 
+    sep ='__', 
+    into = c('datasets', 'pam50' )) %>%
+  data.frame(.) %>% 
+  dplyr::mutate(
+    type = recode(
+      datasets,
+      'HTseq_counts' = 'Raw counts',
+      'HTseq_FPKM' = 'FPKM',
+      'HTseq_FPKM.UQ' ='FPKM.UQ',
+      'RUV_III' = 'RUV-III'
+  ))
+
+### Plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_LibrarySize_Boxplot_CorrelationGenesLsPerPam50.tiff'),
+#     width = 3000,
+#     height = 2000,
+#     res = 400
+#     )
+ggplot(corr.geneLs.pam50Genefu, aes(x = pam50, y = corr.coef, fill = type)) +
+  geom_boxplot( outlier.color = 'white') +
+  ylab("Spearman correlation") +
+  xlab('PAM50 subtypes') +
+  # ylim(c(-.6,1)) +
+  scale_fill_manual(values = dataSets.colors) +
+  guides(fill = guide_legend("Datasets")) + 
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1.3),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 18),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### de p-value histograms
+#### within pam50
+```{r}
+de.ls.pam50Genefu <- lapply(
+  pam50.level[1:4], 
+  function(x){
+    pval <- lapply(
+      normalizations, 
+      function(y){
+        de.ls.pam50Genefu.all[[x]][[y]]$pvalue
+      })
+    pval <- as.data.frame(do.call(cbind, pval))
+    colnames(pval) <- c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'RUV-III'
+      )
+     pval <- pval %>%
+      tidyr::pivot_longer(
+        everything(),
+        names_to = 'Datasets',
+        values_to = 'Pvalues') %>%
+       dplyr::mutate(
+         Datasets = factor(
+           Datasets, 
+           levels = c(
+             'Raw counts',
+             'FPKM',
+             'FPKM.UQ', 
+             'RUV-III'))) %>% 
+      data.frame()
+     ggplot(pval, aes(x = Pvalues)) +
+      geom_histogram(binwidth = 0.05) +
+      scale_x_continuous(breaks = c(seq(0,1,.5))) +
+      xlab('p_values') + ylab('Frequency') +
+      ggtitle(x) +
+      facet_wrap(~Datasets, ncol = 4) +
+      theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = 'black', size = 1),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 22),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 14),
+        strip.text.x = element_text(size = 16)
+      )
+    
+  }) 
+names(de.ls.pam50Genefu) <- pam50.level[1:4]
+
+# tiff(
+#   paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_LibrarySize_PvalueHist_DELowAndHighLibrarySize.tiff'
+#   ),
+#   width = 4700,
+#   height = 3000,
+#   res = 400)
+do.call(
+  gridExtra::grid.arrange, 
+  de.ls.pam50Genefu
+  )
+# dev.off()
+```
+
+## Flow cell chmestry effects
+### pca plot
+#### across all samples
+```{r}
+### TCGA
+plot.names <- c(
+  'Raw counts', 
+  'FPKM', 
+  'FPKM.UQ', 
+  'RUV-III'
+  )
+sapply(
+  c(1:4),
+  function(x){
+    # tiff(paste0(
+    #   brca.fig.path,
+    #   'TCGA_BRCA_NormalizationAssessment_FcCh_3PcaPlots',
+    #   normalizations[x],
+    #   '.tiff'),
+    #   width = 4500,
+    #   height = 1400,
+    #   res = 400
+    #   )
+    pcs <- pca.all[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'PAM50',
+      group = brca.cancer.se$FcCh,
+      color = FcCh.colors,
+      strokeSize = .2,
+      pointSize = 2.5,
+      strokeColor = 'gray30',
+      alpha = .6)
+    title <- ggdraw() +
+      draw_label(
+        plot.names[x],
+        fontface = 'bold',
+        size = 26
+      )
+    plot_row <- plot_grid(p[[1]] , p[[2]] , p[[3]], nrow = 1)
+    print(plot_grid(
+      title,
+      plot_row,
+      ncol = 1,
+      rel_heights = c(0.1, 1))
+      )
+    # dev.off()
+  })
+```
+
+### canonical correlation analysis
+#### all samples
+```{r}
+pcs.fcch.cca <- as.data.frame(cca.fcch.all) %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III
+  ) %>% 
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'cca.coef') %>% 
+  dplyr::mutate(
+    datasets = factor(
+      datasets, 
+      levels = c(
+        'Raw counts', 
+        'FPKM', 
+        'FPKM.UQ', 
+        'RUV-III'))
+    )
+## plot
+# tiff(paste0(
+#   brca.fig.path,
+#   'TCGA_BRCA_NormalizationAssessment_FcCh_Cca_AllSamples.tiff'),
+#   width = 2000,
+#   height = 1400,
+#   res = 400
+#     )
+ggplot(pcs.fcch.cca, aes(x = pcs, y = cca.coef, group = datasets)) +
+  geom_line(aes(color = datasets)) + 
+  geom_point(aes(color = datasets)) + 
+  xlab('PCs') + ylab ("Vector correlation") +
+  scale_color_manual(values = c(dataSets.colors), name = 'Datasets') +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10),
+    legend.position = c(.2, .7)
+  )
+# dev.off()
+```
+
+#### within pam50 
+```{r}
+pcs.fcch.cca.pam50 <- lapply(
+  pam50.level, 
+  function(x){
+    r.seq <- lapply(
+      normalizations,
+      function(y){
+      cca.fcch.pam50Genefu.all[[x]][[y]]
+      }) 
+    names(r.seq) <- paste(normalizations, x, sep = '__')
+    do.call(cbind, r.seq)
+  })
+names(pcs.fcch.cca.pam50) <- pam50.level
+pcs.fcch.cca.pam50 <- do.call(cbind, pcs.fcch.cca.pam50) %>% 
+  data.frame(.) %>% 
+  dplyr::mutate(pcs = c(1:10)) %>% 
+  tidyr::pivot_longer(
+    -c(pcs),
+    names_to = 'datasets',
+    values_to = 'cca.coef') %>% 
+  tidyr::separate(
+    col = datasets, 
+    sep ='__', 
+    into = c('datasets', 'pam50' )) %>%
+  data.frame(.) %>% 
+  dplyr::mutate(
+    type = recode(
+      datasets,
+      'HTseq_counts' = 'Raw counts',
+      'HTseq_FPKM' = 'FPKM',
+      'HTseq_FPKM.UQ' ='FPKM.UQ',
+      'RUV_III' = 'RUV-III'
+  ))
+
+### Plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_FlowCellChemistry_CcaPcs.tiff'),
+#     width = 1500,
+#     height = 3000,
+#     res = 400
+#     )
+ggplot(pcs.fcch.cca.pam50 , aes(x = pcs, y = cca.coef)) +
+  geom_line(aes(color = type)) +
+  geom_point(aes(color = type)) +
+  xlab('PCs') +
+  ylab ('Vector correlation') +
+  scale_color_manual(values = dataSets.colors, name = 'Datasets') +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  facet_grid(pam50 ~ .) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 10, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10),
+    legend.position = 'bottom', 
+    strip.text = element_text(size = 14)) +
+    guides(col = guide_legend(nrow = 2))
+# dev.off()
+```
+
+### anova
+#### all samples
+```{r}
+ftest.fcch <- lapply(
+  normalizations, 
+  function(x) ftest.fcch.all[[x]]$FValue) %>% 
+  do.call(
+  cbind, . )
+colnames(ftest.fcch) <- c(
+  'Raw counts',
+  'FPKM',
+  'FPKM.UQ',
+  'RUV-III'
+  )
+ftest.fcch <- ftest.fcch %>% 
+  data.frame(.) %>% 
+  tidyr::pivot_longer(
+    everything(), 
+    names_to = 'datastes', 
+    values_to = 'fval'
+    )
+## plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_FcCh_Anova_AllSamples.tiff'),
+#     width = 800,
+#     height = 800,
+#     res = 400
+#     )
+ggplot(ftest.fcch, aes(x = datastes, y = log2(fval))) +
+  Ipaper::geom_boxplot2() +
+  ylab(expression(Log[2]~'F statistics')) +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black'),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 8, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 8),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### silhouette coefficient
+#### across all samples
+```{r}
+silCoef.fcch <- as.data.frame(silCoef.fcch.all) %>% 
+  tidyr::pivot_longer(
+    everything(), 
+    names_to = 'datasets', 
+    values_to = 'silhou.coff'
+    )
+
+## plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_FcCh_SilhouetteCoeff.tiff'),
+#     width = 1000,
+#     height = 1500,
+#     res = 400
+#     )
+ggplot(silCoef.fcch, aes(x = datasets, y = silhou.coff)) +
+  geom_col() +
+  ylab('Silhouette coefficient') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### ari
+#### across all samples
+```{r }
+ari.fcch <- as.data.frame(ari.fcch.all) %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'datasets',
+    values_to = 'ari')
+### plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_FcCh_ARI.tiff'),
+#     width = 1000,
+#     height = 1500,
+#     res = 400
+#     )
+ggplot(ari.fcch, aes(x = datasets, y = ari)) +
+  geom_col() +
+   ylab('ARI') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### batch scores
+```{r }
+batch.scores <- data.frame(
+  FPKM.UQ = fcch.scores$HTseq_FPKM.UQ$TotalScore,
+  RUV.III = fcch.scores$RUV_III$TotalScore,
+  samples = c(1:1086),
+  batch = as.factor(brca.cancer.se$sub.batches)
+  )  %>% 
+  tidyr::pivot_longer(
+    -c(samples, batch), 
+    values_to = 'scores', 
+    names_to = 'data.sets') %>% 
+  dplyr::mutate(data.sets = case_when(
+    data.sets == 'RUV.III' ~ 'RUV-III',
+    data.sets != 'RUV.III' ~ 'FPKM.UQ',
+    )) %>% 
+  data.frame(.)
+
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_FcCH_BatchScores.tiff'),
+#     width = 3000,
+#     height = 1500,
+#     res = 400
+#     )
+ggplot(batch.scores, aes(x = samples, y = scores, color = batch )) +
+  geom_point() +
+  scale_color_manual(values = sub.batches.color[1:4], name = 'Batch') +
+  ylab('Batch scores') +
+  xlab('Samples') +
+  ylim(c(-.1, .26)) +
+  facet_wrap(~data.sets) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1.2),
+    axis.text.x = element_text(size = 18),
+    axis.text.y = element_text(size = 18),
+    axis.title.x = element_text(size = 22),
+    axis.title.y = element_text(size = 22),
+    legend.text = element_text(size = 22),
+    legend.title = element_text(size = 22),
+    plot.title = element_text(size = 22),
+    legend.key = element_blank(),
+    strip.text.x = element_text(size = 20)
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 5)))
+# dev.off()
+```
+
+### heatmap of affected genes
+```{r}
+selected.genes <- ftest.fcch.all$HTseq_FPKM.UQ$FValue > 300
+sum(selected.genes) # 143
+selected.genes <- ftest.fcch.all$HTseq_FPKM.UQ$Genes[selected.genes]
+
+column_ha = ComplexHeatmap::HeatmapAnnotation(
+  'Flow cell chemistry' = brca.cancer.se$FcCh,
+  'Batch' = brca.cancer.se$sub.batches,
+  col = list(
+    'Flow cell chemistry' = FcCh.colors, 
+    'Batch' = sub.batches.color
+    ),
+  annotation_name_gp = grid::gpar(fontsize = 14),
+  annotation_legend_param =  list(
+    title_gp = grid::gpar(fontsize = 14)
+    ))
+
+h.data <- SummarizedExperiment::assay(brca.cancer.se[selected.genes , ], 'HTseq_FPKM.UQ')
+h.fcch <- ComplexHeatmap::Heatmap(
+  matrix = t(scale(t(h.data), scale = T, center = T)),
+  top_annotation = column_ha,
+  cluster_rows = TRUE, 
+  cluster_columns = FALSE,
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  col = RColorBrewer::brewer.pal(
+    n = 11, name = 'BrBG')[c(1:2,6,10:11)],
+  heatmap_legend_param = list(
+    at = c(seq(-6,6,3)),
+    title = 'Expression',
+    title_gp = grid::gpar(fontsize = 14))
+  )
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_FcCh_HeatMap_TopAffectedGenes.tiff'),
+#     width = 3000,
+#     height = 2000,
+#     res = 400
+#     )
+ComplexHeatmap::draw(
+  h.fcch, 
+  heatmap_legend_side = "right", 
+  annotation_legend_side = "right", 
+  merge_legend = TRUE
+  )
+# dev.off()
+```
+
+### spurious correlation between genes 
+```{r }
+selected.genes <- c('ESRRA', 'MAP3K2')
+expr.genes <- lapply(
+  normalizations[c(3:4)], 
+  function(x){
+    t(SummarizedExperiment::assay(
+      brca.cancer.se[selected.genes,], 
+      x
+      ))
+  })
+expr.genes <- as.data.frame(do.call(cbind, expr.genes))
+colnames(expr.genes) <- paste0(
+  colnames(expr.genes), 
+  rep(c('tcga', 'ruv'), each = 2)
+  )
+expr.genes$sub.batches <- brca.cancer.se$sub.batches
+expr.genes$batch.score <- fcch.scores$HTseq_FPKM.UQ$TotalScore
+
+gg.theme <-  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1.5),
+    legend.position = "none",
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    legend.text = element_text(size = 22),
+    legend.title = element_text(size = 22),
+    plot.title = element_text(size = 22),
+    legend.key = element_blank(),
+    strip.text.x = element_text(size = 20)
+  )
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_AdjSubBatchCorrGenesScaterPlotsTcgaFake.tiff'),
+#     width = 4500,
+#     height = 1500,
+#     res = 400
+#     )
+ggplot(expr.genes, aes(x = ESRRAtcga, y = MAP3K2tcga)) +
+  geom_point(
+    aes(fill = sub.batches), 
+    pch = 21, 
+    color = 'gray30', 
+    stroke = .2, 
+    size = 1.8) +
+  scale_fill_manual(values = sub.batches.color) +
+  xlab('ESRRA (gene expression)') +
+  ylab('MAP3K2 (gene expression)') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = 0.4,
+    label.y.npc = .98,
+    r.digits = 2,
+    p.digits = 2,
+    r.accuracy = 0.1,
+    hjust = 0,
+    size = 8,
+    col = 'black',
+    cor.coef.name = "rho"
+  ) + gg.theme
+# dev.off()
+
+ggplot(expr.genes, aes(x = ESRRAtcga, y = batch.score)) +
+  geom_point(
+    aes(fill = sub.batches), 
+    pch = 21, 
+    color = 'gray30', 
+    stroke = .2, 
+    size = 1.8) +
+  scale_fill_manual(values = sub.batches.color) +
+  xlab('ESRRA (gene expression)') +
+  ylab('Batch scores') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = 0.4,
+    label.y.npc = .98,
+    r.digits = 2,
+    p.digits = 2,
+    r.accuracy = 0.1,
+    hjust = 0,
+    size = 8,
+    col = 'black',
+    cor.coef.name = "rho"
+  ) + gg.theme
+
+ggplot(expr.genes, aes(x = MAP3K2tcga, y = batch.score)) +
+  geom_point(
+    aes(fill = sub.batches), 
+    pch = 21, 
+    color = 'gray30', 
+    stroke = .2, 
+    size = 1.8) +
+  scale_fill_manual(values = sub.batches.color) +
+  xlab('MAP3K2 (gene expression)') +
+  ylab('Batch scores') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = 0.4,
+    label.y.npc = .98,
+    r.digits = 2,
+    p.digits = 2,
+    r.accuracy = 0.1,
+    hjust = 0,
+    size = 8,
+    col = 'black',
+    cor.coef.name = "rho"
+  ) + gg.theme
+
+ggplot(expr.genes, aes(x = ESRRAruv, y = MAP3K2ruv)) +
+  geom_point(
+    aes(fill = sub.batches), 
+    pch = 21, 
+    color = 'gray30', 
+    stroke = .2, 
+    size = 1.8) +
+  scale_fill_manual(values = sub.batches.color) +
+  xlab('ESRRA (gene expression)') +
+  ylab('MAP3K2 (gene expression)') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = 0.4,
+    label.y.npc = .98,
+    r.digits = 2,
+    p.digits = 2,
+    r.accuracy = 0.1,
+    hjust = 0,
+    size = 8,
+    col = 'black',
+    cor.coef.name = "rho"
+  ) + gg.theme
+```
+
+### global co-expression analysis of highly affected genes
+
+```{r}
+corr.fcchGenes <- data.frame(
+  tcga = corr.geneBatchScore.pairWise.all$HTseq_FPKM.UQ,
+  ruv = corr.geneBatchScore.pairWise.all$RUV_III
+)
+### plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_CoexpressFcch.tiff'),
+#     width = 3000,
+#     height = 2200,
+#     res = 400
+#     )
+ggplot(corr.fcchGenes, aes(x = tcga, y = ruv)) +
+  geom_hex() +
+  geom_abline(slope = 1, intercept = 0) +
+  ylim(-.5,.8) +
+  xlim(-.5,.8) +
+  xlab("Spearman correlation (TCGA-FPKM.UQ)") +
+  ylab("Spearman correlation (RUV-III)") +
+  geom_hline(yintercept = 0,  linetype = 2) +
+  geom_vline(xintercept = 0,  linetype = 2) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1.3),
+    axis.title.x = element_text(size = 24),
+    axis.title.y = element_text(size = 24),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### novel correlation between genes 
+#### tcga data
+```{r}
+gene.x <- 'CNOT1' 
+gene.y <-  'E2F4'
+
+expr.genes <- lapply(
+  c(1,3,4), 
+  function(x){
+    if(x == 1){
+      data.frame(
+        gene.x = brca.microarray[gene.x , ],
+        gene.y = brca.microarray[gene.y , ],
+        sub.batches = rep('group5', ncol(brca.microarray)),
+        data.set =  rep('Microarray', ncol(brca.microarray))
+        ) 
+      }else{
+         data.frame(
+        gene.x = SummarizedExperiment::assay(
+          brca.cancer.se, 
+          normalizations[x])[gene.x , ],
+        gene.y = SummarizedExperiment::assay(
+          brca.cancer.se, 
+          normalizations[x])[gene.y , ],
+        sub.batches = brca.cancer.se$sub.batches,
+        data.set =  rep(normalizations[x], ncol(brca.cancer.se))
+        )}
+  })
+
+expr.genes <- as.data.frame(do.call(rbind, expr.genes))
+expr.genes$data.set <- factor(
+  x = expr.genes$data.set, 
+  levels = c('HTseq_FPKM.UQ', 'RUV_III','Microarray')
+  )
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_SubBatchCorrGenesScaterPlotsTcgaNpvel.tiff'),
+#     width = 4500,
+#     height = 1500,
+#     res = 400
+#     )
+ggplot(expr.genes, aes(x = gene.x, y = gene.y, color = sub.batches)) +
+  geom_point(aes(fill = sub.batches), pch = 21, stroke = .2) +
+  scale_fill_manual(values = sub.batches.color) +
+  geom_smooth(method = "lm", se = FALSE) +
+  # xlab('') + ylab('') +
+  # xlab(bquote(Log[2] ~ .(paste0('expression ', 'ADCK5')))) +
+  # ylab(bquote(Log[2] ~ .(paste0('expression ', 'ZNF623')))) +
+  xlab(paste0(gene.x, ' (gene expression)')) +
+  ylab(paste0(gene.y, ' (gene expression)')) +
+  facet_wrap(~ data.set, scale = 'free') +
+  ggpubr::stat_cor(
+    aes(color = sub.batches, label = ..r.label..),
+    method = "spearman" ,
+    label.x.npc = 0.02,
+    label.y.npc = .9,
+    hjust = 0,
+    size = 6,
+    r.accuracy = 0.1,
+    cor.coef.name = "rho"
+  ) +
+  ggpubr::stat_cor(
+    aes( label = ..r.label..),
+    label.x.npc = 0.4,
+    method = "spearman",
+    label.y.npc = .98,
+    r.digits = 2,
+    p.digits = 2,
+    r.accuracy = 0.1,
+    hjust = 0,
+    size = 8,
+    col = 'black',
+    cor.coef.name = "rho"
+  ) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1.5),
+    legend.position = "none",
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    legend.text = element_text(size = 22),
+    legend.title = element_text(size = 22),
+    plot.title = element_text(size = 22),
+    legend.key = element_blank(),
+    strip.text.x = element_text(size = 20)
+  )
+# dev.off()
+```
+
+### gene expression difference paired metastatic-primary samples
+```{r}
+selected.genes <- ftest.fcch.all$HTseq_FPKM.UQ$FValue > 200
+selected.genes <- ftest.fcch.all$HTseq_FPKM.UQ$Genes[selected.genes]
+
+### Within batch one
+met.primary.pairs <- c(
+  'TCGA-E2-A15A-01A-11R-A12D-07', 
+  'TCGA-E2-A15A-06A-11R-A12D-07',
+  'TCGA-AC-A6IX-01A-12R-A32P-07',
+  'TCGA-AC-A6IX-06A-11R-A32P-07',
+  'TCGA-BH-A1FE-01A-11R-A13Q-07',
+  'TCGA-BH-A1FE-06A-11R-A213-07')
+met.primary.tcga <- as.matrix(
+  SummarizedExperiment::assay(
+    brca.cancer.se, 
+    'HTseq_FPKM.UQ')
+  )
+met.primary.ruv <- as.matrix(
+  SummarizedExperiment::assay(
+    brca.cancer.se, 
+    'RUV_III')
+  )
+
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_PrimaryMetMaPlotsTCGA.tiff'),
+#     width = 4500,
+#     height = 1500,
+#     res = 400
+#     )
+data <- c(
+  'met.primary.tcga', 
+  'met.primary.ruv'
+  )
+par(
+  mfrow = c(2,3),
+  mar = c(6,6,2,2)
+  )
+lapply(
+  c(1,2), 
+  function(x){
+    data <- get(data[x])[, met.primary.pairs]
+    for(i in c(1,3,5)){
+      primary <- data[, i]
+      met <- data[, i + 1]
+      sample <- substr(x = colnames(data)[i],
+                       start = 1,
+                       stop = 12)
+  plot((primary + met) / 2,
+     primary - met,
+     ylim = c(-6,6),
+     col = 'grey',
+     bty = 'l',
+     las = 1,
+     cex.axis = 1.5,
+     cex.main = 1.7,
+     cex.lab = 2,
+     lwd.ticks = 3,
+     cex = 1,
+     xlab = 'Average expression',
+     ylab = 'Log ratio',
+     main = sample)
+  box(lwd = 4, bty = 'l')
+  X1 <- primary[which(names(primary) %in% selected.genes)]
+  Y1 <- met[which(names(met) %in% selected.genes)]
+  points((X1 + Y1) / 2,
+       X1 - Y1,
+       col = 'black',
+       pch = 21,
+       cex = 1.2,
+       bg = 'grey30'
+       )
+  abline(h = c(0), col = 'red', lwd = 2, lty = 2)
+  abline(h = c(-1, 1), col = 'gray40', lwd = 2, lty = 2)
+  }
+})
+```
+
+## Tumour purity
+### linear regression
+#### across all samples
+
+```{r}
+lreg.purity <- as.data.frame(lreg.purity.all) %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III
+  ) %>% 
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'r.sq') %>% 
+  dplyr::mutate(
+    datasets = factor(
+      datasets, 
+      levels = c(
+        'Raw counts', 
+        'FPKM', 
+        'FPKM.UQ', 
+        'RUV-III'))
+    )
+### plot
+# tiff(paste0(
+#   brca.fig.path,
+#   'TCGA_BRCA_NormalizationAssessment_Purity_LinearReg_AllSamples.tiff'),
+#   width = 2400,
+#   height = 1400,
+#   res = 400
+#     )
+ggplot(lreg.purity, aes(x = pcs, y = r.sq, group = datasets)) +
+  geom_line(aes(color = datasets)) + 
+  geom_point(aes(color = datasets)) + 
+  xlab('PCs') + ylab (expression('R'^'2')) +
+  scale_color_manual(values = c(dataSets.colors)) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+#### within apm50
+
+```{r}
+pcs.purity.lnreg.pam50 <- lapply(
+  pam50.level, 
+  function(x){
+    r.seq <- lapply(
+      normalizations,
+      function(y){
+      lreg.purity.pam50Genefu.all[[x]][[y]]
+      }) 
+    names(r.seq) <- paste(normalizations, x, sep = '__')
+    do.call(cbind, r.seq)
+  })
+names(pcs.purity.lnreg.pam50) <- pam50.level
+pcs.purity.lnreg.pam50 <- do.call(cbind, pcs.purity.lnreg.pam50) %>% 
+  data.frame(.) %>% 
+  dplyr::mutate(pcs = c(1:10)) %>% 
+  tidyr::pivot_longer(
+    -c(pcs),
+    names_to = 'datasets',
+    values_to = 'r.sq') %>% 
+  tidyr::separate(
+    col = datasets, 
+    sep ='__', 
+    into = c('datasets', 'pam50' )) %>%
+  data.frame(.) %>% 
+  dplyr::mutate(
+    type = recode(
+      datasets,
+      'HTseq_counts' = 'Raw counts',
+      'HTseq_FPKM' = 'FPKM',
+      'HTseq_FPKM.UQ' ='FPKM.UQ',
+      'RUV_III' = 'RUV-III'
+  ))
+### plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_Puirty_LinearRegPlot.tiff'),
+#     width = 1500,
+#     height = 3000,
+#     res = 400
+#     )
+ggplot(pcs.purity.lnreg.pam50 , aes(x = pcs, y = r.sq)) +
+  geom_line(aes(color = type)) +
+  geom_point(aes(color = type)) +
+  xlab('PCs') +
+  ylab (expression('R'^'2')) +
+  scale_color_manual(values = dataSets.colors) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  facet_grid(pam50 ~ .) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 10, angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(colour = 'white'),
+    strip.text.x = element_text(size = 10),
+    strip.text = element_text(size = 14),
+    legend.position = 'bottom'
+  )+
+  guides(col = guide_legend(nrow = 2, byrow = TRUE))
+# dev.off()
+```
+
+### correlations between genes and purity
+#### within pam50 
+```{r }
+corr.genePurity.pam50Genefu <- lapply(
+  pam50.level, 
+  function(x){
+    r.seq <- lapply(
+      normalizations,
+      function(y){
+      corr.genePurity.pam50Genefu.all[[x]][[y]]$purity_rho
+      }) 
+    names(r.seq) <- paste(normalizations, x, sep = '__')
+    do.call(cbind, r.seq)
+  })
+names(corr.genePurity.pam50Genefu) <- pam50.level
+corr.geneLs.pam50Genefu <- do.call(
+  cbind, 
+  corr.genePurity.pam50Genefu) %>% 
+  data.frame(.) %>% 
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'datasets',
+    values_to = 'corr.coef') %>% 
+  tidyr::separate(
+    col = datasets, 
+    sep ='__', 
+    into = c('datasets', 'pam50')) %>%
+  data.frame(.) %>% 
+  dplyr::mutate(
+    type = recode(
+      datasets,
+      'HTseq_counts' = 'Raw counts',
+      'HTseq_FPKM' = 'FPKM',
+      'HTseq_FPKM.UQ' ='FPKM.UQ',
+      'RUV_III' = 'RUV-III'
+  ))
+### plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_Purity_CorrGenesPurity_BoxPlots.tiff'),
+#     width = 3000,
+#     height = 2000,
+#     res = 400
+#     )
+ggplot(corr.geneLs.pam50Genefu, aes(x = pam50, y = corr.coef, fill = type)) +
+  geom_boxplot(outlier.color = 'white') +
+  ylab("Spearman correlation") +
+  xlab('PAM50 subtypes') +
+  scale_fill_manual(values = dataSets.colors) +
+  guides(fill = guide_legend("Datasets")) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 22),
+    axis.title.y = element_text(size = 22),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 16),
+    strip.text.x = element_text(size = 10)
+    )
+# dev.off()
+```
+
+### p-value hist of de analysis
+#### within pam50
+```{r}
+de.purity.pam50Genefu <- lapply(
+  pam50.level[1:4], 
+  function(x){
+    pval <- lapply(
+      normalizations[c(3,4)], 
+      function(y){
+        de.purity.pam50Genefu.all[[x]][[y]]$pvalue
+      })
+    pval <- as.data.frame(do.call(cbind, pval))
+    colnames(pval) <- c(
+      'FPKM.UQ',
+      'RUV-III'
+      )
+     pval <- pval %>%
+      tidyr::pivot_longer(
+        everything(),
+        names_to = 'Datasets',
+        values_to = 'Pvalues') %>%
+       dplyr::mutate(
+         Datasets = factor(
+           Datasets, 
+           levels = c(
+             'FPKM.UQ', 
+             'RUV-III'))) %>% 
+      data.frame()
+     ggplot(pval, aes(x = Pvalues)) +
+      geom_histogram(binwidth = 0.1) +
+      scale_x_continuous(breaks = c(seq(0,1,.5))) +
+      xlab('p_values') + ylab('Frequency') +
+      ggtitle(x) +
+      facet_wrap(~Datasets, ncol = 4) +
+      theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = 'black', size = 1),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 22),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 14),
+        strip.text.x = element_text(size = 16)
+      )
+    
+  }) 
+names(de.purity.pam50Genefu) <- pam50.level[1:4]
+### plot
+# tiff(
+#   paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_Purity_PvalueHist_DELowAndHighLibrarySize.tiff'
+#   ),
+#   width = 4000,
+#   height = 6000,
+#   res = 400)
+do.call(
+  gridExtra::grid.arrange, 
+  de.purity.pam50Genefu
+  )
+# dev.off()
+```
+
+### purity scores
+```{r}
+purity.score <- data.frame(
+  FPKM.UQ = purity.estimates$FPKM.UQ,
+  "RUV-III" = purity.estimates$`RUV-III`
+  ) %>% 
+  tidyr::pivot_longer(
+    everything(), 
+    names_to = 'datasets', 
+    values_to = 'purity') %>% 
+  data.frame()
+### plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_Purity_Scores.tiff'),
+#     width = 2000,
+#     height = 1500,
+#     res = 400
+#     )
+ggplot(purity.score, aes( x = purity, fill = datasets)) +
+  geom_histogram(alpha = 0.7, position = "identity") +
+  scale_fill_manual(values = dataSets.colors[c(3,4)], name = 'Datasets') +
+  xlab('Tumour purity scores') +
+  ylab('Frequency') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 8),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+    )
+# dev.off()
+```
+
+### gene co-expresseion 
+```{r}
+selected.genes <- c('ZEB2', 'ETS1')
+expr.genes <- lapply(
+  normalizations[c(3:4)], 
+  function(x){
+    t(SummarizedExperiment::assay(
+      brca.cancer.se[selected.genes,], 
+      x
+      ))
+  })
+expr.genes <- as.data.frame(do.call(cbind, expr.genes))
+colnames(expr.genes) <- paste0(
+  colnames(expr.genes), 
+  rep(c('tcga', 'ruv'), each = 2)
+  )
+expr.genes$purity <- brca.cancer.se$purity_HTseq_FPKM.UQ
+
+gg.them.1 <- theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1.2),
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 14),
+    legend.key.width = unit(1,"cm"),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 15),
+    axis.title.y = element_text(size = 15),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 22)
+  ) 
+p.size <- 7
+genes.corr.tcga <- ggplot(expr.genes, aes(x = ZEB2tcga, y = ETS1tcga)) +
+  geom_point(aes(colour = purity)) +
+  scale_colour_gradientn(
+    colours = viridis::viridis(n =10), 
+    name = 'Tumour purity') +
+  xlab('Gene expression (ZEB2)') +
+  ylab('Gene expression (ETS1)') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .4,
+    label.y.npc = 1,
+    hjust = 0,
+    size = p.size,
+    r.accuracy = .1,
+    col = p.color,
+    cor.coef.name = "rho") + 
+  gg.them.1 + 
+  guides(colour = guide_colourbar(title.position = "top"))
+
+genes.corr.ruv <- ggplot(expr.genes, aes(x = ZEB2ruv, y = ETS1ruv)) +
+  geom_point(aes(colour = purity)) +
+  scale_colour_gradientn(
+    colours = viridis::viridis(n =10), 
+    name = 'Tumour purity') +
+  xlab('Gene expression (ZEB2)') +
+  ylab('Gene expression (ETS1)') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .4,
+    label.y.npc = 1,
+    hjust = 0,
+    r.accuracy = .1,
+    size = p.size,
+    col = p.color,
+    cor.coef.name = "rho") + 
+  gg.them.1 + 
+  guides(colour = guide_colourbar(title.position = "top"))
+
+
+gene1.purity <- ggplot(expr.genes, aes(x = purity, y = ZEB2tcga)) +
+  geom_point(aes(colour = purity)) +
+  scale_colour_gradientn(
+    colours = viridis::viridis(n =10), 
+    name = 'Tumour purity') +
+  ylab('Gene expression (ZEB2)') +
+  xlab('Tumour purity score') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .4,
+    label.y.npc = 1,
+    r.accuracy = .1,
+    hjust = 0,
+    size = p.size,
+    col = p.color,
+    cor.coef.name = "rho") + 
+   gg.them.1 + 
+  guides(colour = guide_colourbar(title.position = "top"))
+
+gene2.purity <- ggplot(expr.genes, aes(x = purity, y = ETS1tcga)) +
+  geom_point(aes(colour = purity)) +
+  scale_colour_gradientn(
+    colours = viridis::viridis(n =10), 
+    name = 'Tumour purity') +
+  ylab('Gene expression (ETS1)') +
+  xlab('Tumour purity score') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .4,
+    label.y.npc = 1,
+    r.accuracy = .1,
+    hjust = 0,
+    size = p.size,
+    col = p.color,
+    cor.coef.name = "rho") + 
+   gg.them.1 + 
+  guides(colour = guide_colourbar(title.position = "top"))
+
+### Microarray
+df.micro.78958 <- data.frame(
+  ZEB2 = expr.78958[ '9839_ZEB2' ,  ],
+  ETS1 = expr.78958[ '2113_ETS1' ,  ]
+  )
+p.micro.78958 <- ggplot(df.micro.78958, aes(x = ZEB2, y = ETS1)) +
+  geom_point() + 
+  scale_colour_gradientn(
+    colours = viridis::viridis(n =10),
+    name = 'Tumour purity') +
+  xlab('Gene expression (ZEB2)') +
+  ylab('Gene expression (ETS1)') +
+  ggpubr::stat_cor(
+    aes(label = ..r.label..),
+    label.x.npc = .4,
+    label.y.npc = 1,
+    hjust = 0,
+    r.accuracy = .1,
+    size = p.size,
+    col = p.color,
+    cor.coef.name = "rho") + 
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1.2),
+    legend.position = "bottom",
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title.x = element_text(size = 15),
+    axis.title.y = element_text(size = 15)
+  )
+
+### plot
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_Purity_CoExpressionExample.tiff'),
+#     width = 7400,
+#     height = 1500,
+#     res = 400
+#     )
+ggpubr::ggarrange(
+  gene1.purity, 
+  gene2.purity,
+  genes.corr.tcga, 
+  genes.corr.ruv,
+  p.micro.78958,
+  legend = 'none',
+  common.legend = F,
+  nrow = 1,
+  ncol = 5
+  )
+# dev.off()
+```
+
+### pairwise correlation betwene genes
+```{r}
+### All
+all.corr.data <- data.frame(
+  ppcor.tcga = corr.genePurity.partialPairWise.all$HTseq_FPKM.UQ,
+  spearman.tcga = corr.genePurity.pairWise.all$HTseq_FPKM.UQ,
+  ppcor.ruv = corr.genePurity.pairWise.all$RUV_III,
+  spearman.ruv = corr.genePurity.partialPairWise.all$RUV_III
+  )
+
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_Purity_CorrGenePurity_PairWsie.tiff'),
+#     width = 3000,
+#     height = 2000,
+#     res = 400
+#     )
+ggplot(all.corr.data, aes(x = ppcor.tcga, y = spearman.tcga)) +
+  geom_hex() +
+  geom_abline(slope = 1, intercept = 0) +
+  ylim(-.8,1) +
+  xlim(-.8,1) +
+  xlab('Partial correlation') +
+  ylab('Correlation') +
+  geom_hline(yintercept = 0,  linetype = 2) +
+  geom_vline(xintercept = 0,  linetype = 2) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 2),
+    axis.title.x = element_text(size = 27),
+    axis.title.y = element_text(size = 27),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_Purity_CorrGenePurity_Partial.tiff'),
+#     width = 3000,
+#     height = 2000,
+#     res = 400
+#     )
+ggplot(all.corr.data, aes(x = ppcor.ruv, y = spearman.ruv)) +
+  geom_hex() +
+  geom_abline(slope = 1, intercept = 0) +
+  ylim(-.8,1) +
+  xlim(-.8,1) +
+  xlab('Partial correlation') +
+  ylab('Correlation') +
+  geom_hline(yintercept = 0,  linetype = 2) +
+  geom_vline(xintercept = 0,  linetype = 2) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 2),
+    axis.title.x = element_text(size = 27),
+    axis.title.y = element_text(size = 27),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 16),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### gene expression and survival
+
+```{r}
+surv.theme <- theme(
+  panel.background = element_blank(),
+  axis.line = element_line(colour = 'black', size = 2),
+  axis.title.x = element_text(size = 22),
+  axis.title.y = element_text(size = 22),
+  plot.title = element_text(size = 24),
+  axis.text.x = element_text(size = 16),
+  axis.text.y = element_text(size = 16),
+  legend.text = element_text(size = 22),
+  legend.title = element_text(size = 22),
+  strip.text.x = element_text(size = 18),
+  legend.position = 'bottom'
+)
+intersting.genes <- c('TGFBR2', 'CMKLR1', 'ZEB2', 'STAB1', 'ESRRA')
+for(x in intersting.genes){
+  p.survival.purity.tcga <- survival_plot(
+      data = SummarizedExperiment::assay(brca.cancer.se, 'HTseq_FPKM.UQ'),
+      stratify = 'expr',
+      annot = SummarizedExperiment::colData(brca.cancer.se),
+      scoreCol =  NULL,
+      gene = x,
+      covariate = NULL,
+      isCategoricalCov = FALSE,
+      timeCol = "OS.time_liu",
+      eventCol = "OS_liu",
+      nGroup = 2,
+      mainTitle1 = x,
+      confInt = FALSE,
+      ylabel = "Survival",
+      cols = c(brewer.pal(9, "Set1")[c(2, 3, 4, 5, 7, 8)],
+               brewer.pal(8, "Dark2")[c(8, 1, 4, 6)]),
+      nColLegend = 1,
+      plotType = "autoplot"
+    )$plot + surv.theme
+    
+    p.survival.purity.ruv <- survival_plot(
+      data = SummarizedExperiment::assay(brca.cancer.se, 'RUV_III'),
+      stratify = 'expr',
+      annot = SummarizedExperiment::colData(brca.cancer.se),
+      scoreCol =  NULL,
+      gene = x,
+      covariate = NULL,
+      isCategoricalCov = FALSE,
+      timeCol = "OS.time_liu",
+      eventCol = "OS_liu",
+      nGroup = 2,
+      mainTitle1 = x,
+      confInt = FALSE,
+      ylabel = "Survival",
+      cols = c(brewer.pal(9, "Set1")[c(2, 3, 4, 5, 7, 8)],
+               brewer.pal(8, "Dark2")[c(8, 1, 4, 6)]),
+      nColLegend = 1,
+      plotType = "autoplot"
+    )$plot + surv.theme
+    #######
+    # tiff(
+    #   paste0(
+    #     brca.fig.path,
+    #     'TCGA_BRCA_NormalizationAssessment_Purity_GenesSurvival_', x, '.tiff'
+    #   ),
+    #   width = 4000,
+    #   height = 2000,
+    #   res = 400
+    # )
+    p <- ggpubr::ggarrange(
+      p.survival.purity.tcga,
+      p.survival.purity.ruv,
+      common.legend = F
+      )
+    print(p)
+    # dev.off()
+}
+```
+
+## PAM50 subtypes
+### pca plots
+```{r}
+genefu.calls <- c(
+  'pam50.geneFu.raw',
+  'pam50.geneFu.fpkm',
+  'pam50.geneFu.fpkmUq',
+  'pam50Genefu.ruv')
+
+sapply(
+  c(1:4),
+  function(x){
+    # tiff(paste0(
+    #   brca.fig.path,
+    #   'TCGA_BRCA_NormalizationAssessment_Pam50_PcaPlots',
+    #   tcga.harmonized[x],
+    #   '.tiff'),
+    #   width = 4500,
+    #   height = 1400,
+    #   res = 400
+    #   )
+    pcs <- pca.all[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'PAM50',
+      group = SummarizedExperiment::colData(brca.cancer.se)[ , genefu.calls[x]],
+      color = pam50.colors[2:6],
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .6)
+    do.call(
+      gridExtra::grid.arrange,
+      c(p[1:3],
+        ncol = 3)
+      )
+    # dev.off()
+  })
+```
+
+#### canonical correlation analysis
+```{r}
+cca.pam50Genefu <- as.data.frame(cca.pam50Genefu.all) %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III
+  ) %>% 
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'cca.corr') %>% 
+  dplyr::mutate(
+    datasets = factor(
+      datasets, 
+      levels = c(
+        'Raw counts', 
+        'FPKM', 
+        'FPKM.UQ', 
+        'RUV-III'))
+    )
+# tiff(paste0(
+#   brca.fig.path,
+#   'TCGA_BRCA_NormalizationAssessment_Pam50_Caa.tiff'),
+#   width = 2200,
+#   height = 1400,
+#   res = 400
+#     )
+ggplot(cca.pam50Genefu, aes(x = pcs, y = cca.corr, group = datasets)) +
+  geom_line(aes(color = datasets)) + 
+  geom_point(aes(color = datasets)) + 
+  xlab('PCs') + ylab ("Vector correlation") +
+  scale_color_manual(values = c(dataSets.colors), name = 'Datasets') +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10),
+    legend.position = c(.6,.3)
+  )
+# dev.off()
+```
+
+#### silhouette coefficient 
+```{r}
+silCoef.pam50 <- as.data.frame(silCoef.pam50Genefu.all) %>% 
+  tidyr::pivot_longer(
+    everything(), 
+    names_to = 'datasets', 
+    values_to = 'silhou.coff'
+    )
+
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessmentFPKM_Pam50SilCoeff.tiff'),
+#     width = 1000,
+#     height = 1500,
+#     res = 400
+#     )
+ggplot(silCoef.pam50, aes(x = datasets, y = silhou.coff)) +
+  geom_col() +
+  ylab('Silhouette coefficient') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+#### ari
+```{r}
+ari.pam50 <- as.data.frame(ari.pam50Genefu.all) %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'datasets',
+    values_to = 'ari')
+
+# tiff(paste0(
+#     brca.fig.path,
+#     'TCGA_BRCA_NormalizationAssessment_Pam50ARI.tiff'),
+#     width = 1000,
+#     height = 1500,
+#     res = 400
+#     )
+ggplot(ari.pam50, aes(x = datasets, y = ari)) +
+  geom_col() +
+  ylab('ARI') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+#### survival analysis of different PAM50 calls
+```{r}
+brca.sampleAnnot.cancer <- brca.ruv.stat.summaries$brca.sampleAnnot.cancer
+library(survcomp)
+cols <- c(
+  'Sample',
+  'age_at_initial_pathologic_diagnosis_liu',
+  'OS.time_liu',
+  'OS_liu',
+  'pam50.geneFu.raw',
+  'pam50.geneFu.fpkm',
+  'pam50.geneFu.fpkmUq',
+  'pam50.erBalanced.UQ',
+  'pam50.erBalanced.raw',
+  'pam50.erBalanced.FPKM',
+  'pam50.erBalanced.FPKM.UQ',
+  'pam50Genefu.ruv'
+)
+new.info <- brca.sampleAnnot.cancer[ , cols]
+new.info <- new.info[ complete.cases(new.info) , ]
+
+colnames(new.info)[5:ncol(new.info)] <- c(
+  'Raw counts (genefu)',
+  'FPKM (genefu)',
+  'FPKM.UQ (genefu)',
+  'UQ.normalized (ER balanced)',
+  'Raw counts (ER balanced)',
+  'FPKM (ER balanced)',
+  'FPKM.UQ (ER balanced)',
+  'RUV-III (genefu)'
+  )
+
+data.names <- colnames(new.info)[5:ncol(new.info)]
+set.seed(2023091423)
+pam50.survival <- lapply(
+  c(1:length(data.names)),
+  function(x){
+    df.annot <- new.info
+    index <- df.annot$OS.time_liu < 4000 & df.annot[, data.names[x]] != 'Normal like' 
+    pam50.survival.ruv <- survival_plot(
+      data = brca.rawCounts.cancer[ , index],
+      stratify = 'covariate',
+      annot = df.annot[index, ],
+      scoreCol = NULL,
+      covariate = data.names[x],
+      isCategoricalCov = TRUE,
+      timeCol = "OS.time_liu",
+      eventCol = "OS_liu",
+      nGroup = NULL,
+      mainTitle1 = data.names[x],
+      confInt = FALSE,
+      ylabel = "Survival",
+      cols = c(
+        RColorBrewer::brewer.pal(9, "Set1")[c(2, 3, 4, 5, 7, 8)],
+        RColorBrewer::brewer.pal(8, "Dark2")[c(8, 1, 4, 6)]
+      ),
+      nColLegend = 2,
+      plotType = "autoplot"
+    )$plot +
+      theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = 'black', size = 1),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        plot.title = element_text(size = 15),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        strip.text.x = element_text(size = 10)
+      )
+  })
+tiff(paste0(
+  brca.fig.path,
+  'TCGA_BRCA_NormAssessment_Pam50_DifferentCalls_NoNormalLike.tiff'),
+  width = 7000,
+  height = 4000,
+  res = 400
+    )
+cowplot::plot_grid(plotlist = pam50.survival,nrow = 2)
+dev.off()
+```
+
+#### consistency between different calls
+
+```{r}
+combi.pam50 <- combn(x = c(
+  'pam50.geneFu.fpkm',
+  'pam50.geneFu.fpkmUq',
+  'pam50.erBalanced.UQ',
+  'pam50.erBalanced.FPKM',
+  'pam50.erBalanced.FPKM.UQ',
+  'pam50Genefu.ruv'),
+  m = 2
+  )
+
+name.combi <- combn(x = c(
+  'FPKM (genefu)', 
+  'FPKM.UQ (genefu)', 
+  'UQ (genefu)', 
+  'FPKM (ER balanced)', 
+  'FPKM.UQ (ER balanced)',
+  'RUV-III (genefu)'), 
+  m = 2
+  )
+
+pam50.confu.mat <- lapply(
+  c(1:ncol(combi.pam50)), 
+  function(x){
+    pam50.table <- table(
+    brca.sampleAnnot.cancer[, combi.pam50[1,x]], 
+    brca.sampleAnnot.cancer[, combi.pam50[2,x]]
+    )
+  pam50.table <- as.data.frame.matrix(pam50.table)
+  h <- ComplexHeatmap::Heatmap(
+    matrix = pam50.table,
+    col = c('gray', 'gray40'),
+    column_title = paste0(name.combi[1, x], ' vs. ', '\n ' , name.combi[2, x]),
+    column_names_gp = gpar(fontsize = 18),
+    row_names_gp = gpar(fontsize = 18),
+    column_title_gp = gpar(fontsize = 18),
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    column_names_rot = 20,
+    show_heatmap_legend = FALSE,
+    name = 'Frequency',
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      grid::grid.text(sprintf("%.0f", pam50.table[i, j]),
+                      x,
+                      y,
+                      gp = grid::gpar(fontsize = 14))
+    })
+  })
+
+tiff(paste0(
+  brca.fig.path,
+  'TCGA_BRCA_NormAssess_Pam50_DifferentCalls_1.tiff'),
+  width = 7500,
+  height = 2000,
+  res = 400
+  )
+ComplexHeatmap::draw(
+  pam50.confu.mat[[1]] + 
+  pam50.confu.mat[[2]] + 
+  pam50.confu.mat[[3]] + 
+  pam50.confu.mat[[4]] + 
+  pam50.confu.mat[[5]] )
+dev.off()
+
+tiff(paste0(
+  brca.fig.path,
+  'TCGA_BRCA_NormAssess_Pam50_DifferentCalls_2.tiff'),
+  width = 7500,
+  height = 2000,
+  res = 400
+  )
+ComplexHeatmap::draw(
+  pam50.confu.mat[[6]] + 
+  pam50.confu.mat[[7]] + 
+  pam50.confu.mat[[8]] + 
+  pam50.confu.mat[[9]] + 
+  pam50.confu.mat[[10]] )
+dev.off()
+
+tiff(paste0(
+  brca.fig.path,
+  'TCGA_BRCA_NormAssess_Pam50_DifferentCalls_3.tiff'),
+  width = 7500,
+  height = 2000,
+  res = 400
+  )
+ComplexHeatmap::draw(
+  pam50.confu.mat[[11]] + 
+  pam50.confu.mat[[12]] + 
+  pam50.confu.mat[[13]] + 
+  pam50.confu.mat[[14]] + 
+  pam50.confu.mat[[15]])
+dev.off()
+```
+
+#### pca plots of different pam50 calls
+
+```{r}
+brca.uq <- log2(
+  EDASeq::betweenLaneNormalization(
+    x = brca.rawCounts.cancer, which = 'upper') +1
+  )
+
+brca.rawCounts.cancer.log <- log2(brca.rawCounts.cancer + 1)
+brca.fpkm.cancer.log <- log2(brca.fpkm.cancer + 1)
+brca.fpkmUq.cancer.log <- log2(brca.fpkmUq.cancer + 1)
+different.norm.data <-
+  c(
+    'brca.rawCounts.cancer.log',
+    'brca.fpkm.cancer.log',
+    'brca.fpkmUq.cancer.log',
+    'brca.uq',
+    'brca.rawCounts.cancer.log',
+    'brca.fpkm.cancer.log',
+    'brca.fpkmUq.cancer.log',
+    'brca.ruv'
+  )
+
+pam50.calls <- c(
+  'pam50.geneFu.raw',
+  'pam50.geneFu.fpkm',
+  'pam50.geneFu.fpkmUq',
+  'pam50.erBalanced.UQ',
+  'pam50.erBalanced.raw',
+  'pam50.erBalanced.FPKM',
+  'pam50.erBalanced.FPKM.UQ',
+  'pam50Genefu.ruv'
+  )
+plot.names <- c(
+  'Raw counts (genefu)', 
+  'FPKM (genefu)',
+  'FPKM.UQ (genefu)', 
+  'UQ (ER balanced)', 
+  'Raw counts (ER balanced)',
+  'FPKM (ER balanced)', 
+  'FPKM.UQ (ER balanced)',
+  'RUV-III (genefu)'
+)
+lapply(
+  c(1:8), 
+  function(x){
+    data <- get(different.norm.data[x])
+    pca.data <- pca.data <- .pca(data = data, is.log = TRUE)
+    p <- .scatter.density.pc(
+      pcs = pca.data$sing.val$u[, 1:3],
+      pc.var = pca.data$var,
+      group.name = 'PAM50',
+      group = brca.sampleAnnot.cancer[, pam50.calls[x]],
+      color = pam50.colors[2:6],
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .6
+    )
+    tiff(
+      paste0(
+        brca.fig.path,
+        'TCGA_BRCA_NormAssess_Pam50_PCA_DifferentCalls_', plot.names[x], '_.tiff'
+      ),
+      width = 4500,
+      height = 1500,
+      res = 400
+    )
+    title <- ggdraw() +
+      draw_label(
+        plot.names[x],
+        fontface = 'bold',
+        size = 26
+      )
+    plot_row <- plot_grid(p[[1]] , p[[2]] , p[[3]], nrow = 1)
+    print(plot_grid(
+      title,
+      plot_row,
+      ncol = 1,
+      rel_heights = c(0.1, 1))
+      )
+    dev.off()
+    
+  })
+```
+
+## RLE medians
+### correlation between genes and medians of RLE / library size
+```{r}
+ls.rle <- lapply(
+  tcga.harmonized,
+  function(x){
+    df <- data.frame(
+      ls = brca.tcga.stat.summaries$corr.geneLs.cancer.tcga[[x]]$ls_rho,
+      rle = brca.tcga.stat.summaries$corr.geneMedRLe.cancer.tcga[[x]]$RleMed_rho,
+      data = rep(x, length(brca.tcga.stat.summaries$corr.genePurity.cancer.tcga[[x]]$purity_rho))
+    )
+  })
+ls.rle.tcga <- do.call(rbind, ls.rle)
+### RUV
+ls.rle.ruv <- data.frame(
+  ls = brca.ruv.stat.summaries$corr.geneLs.cancer.ruv$ls_rho,
+  rle = brca.ruv.stat.summaries$corr.geneMedRLe.cancer.ruv$rleMed_rho,
+  data = rep('RUV-III', length(brca.ruv.stat.summaries$corr.geneMedRLe.cancer.ruv$rleMed_rho))
+)
+
+### All
+ls.rle.all <- rbind(ls.rle.tcga, ls.rle.ruv)
+ls.rle.all$data <- gsub('HTseq_', '', ls.rle.all$data )
+ls.rle.all$data[ls.rle.all$data == 'counts'] <- 'Raw counts'
+ls.rle.all$data <- factor(
+  ls.rle.all$data, 
+  levels = unique(ls.rle.all$data)
+  )
+
+tiff(paste0(
+  brca.fig.path,
+  'TCGA_COAD_NormalizatioAssessment_RLE_Corr.tiff'),
+  width = 6500,
+  height = 2000,
+  res = 400
+  )
+ggplot(ls.rle.all, aes( x = ls, y = rle)) +
+  geom_point(color = 'gray30', alpha = .3) +
+  geom_density2d() +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  ylim(-1,1) +
+  xlim(-1, 1) +
+  xlab("Spearman correlation") +
+  ylab("Spearman correlation") +
+  facet_wrap( ~ data, ncol = 4) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 22),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    legend.position = 'none',
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 24)
+  )
+dev.off()
+```
+
+### correlation between genes and medians of RLE / purity
+
+```{r}
+purity.rle <- lapply(
+  tcga.harmonized,
+  function(x){
+    df <- data.frame(
+      purity = brca.tcga.stat.summaries$corr.genePurity.cancer.tcga[[x]]$purity_rho,
+      rle = brca.tcga.stat.summaries$corr.geneMedRLe.cancer.tcga[[x]]$RleMed_rho,
+      data = rep(x, length(brca.tcga.stat.summaries$corr.genePurity.cancer.tcga[[x]]$purity_rho))
+    )
+  })
+purity.rle.tcga <- do.call(rbind, purity.rle)
+### RUV
+purity.rle.ruv <- data.frame(
+  purity = brca.ruv.stat.summaries$corr.genePurity.cancer.ruv$purity_rho,
+  rle = brca.ruv.stat.summaries$corr.geneMedRLe.cancer.ruv$rleMed_rho,
+  data = rep('RUV-III', length(brca.ruv.stat.summaries$corr.geneMedRLe.cancer.ruv$rleMed_rho))
+)
+
+### All
+purity.rle.all <- rbind(purity.rle.tcga, purity.rle.ruv)
+purity.rle.all$data <- gsub('HTseq_', '', purity.rle.all$data)
+purity.rle.all$data[purity.rle.all$data == 'counts'] <- 'Raw counts'
+
+tiff(paste0(
+  brca.fig.path,
+  'TCGA_BRCA_NormalizatioAssessment_RLE_GenesMedRlePurity.tiff'),
+  width = 6500,
+  height = 2000,
+  res = 400
+  )
+purity.rle.all$data <- factor(
+  purity.rle.all$data, 
+  levels = unique(purity.rle.all$data)
+  )
+ggplot(purity.rle.all, aes( x = purity, y = rle)) +
+  geom_point(color = 'gray30', alpha = .3) +
+  geom_density2d() +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  ylim(-1,1) +
+  xlim(-1, 1) +
+  xlab("Spearman correlation") +
+  ylab("Spearman correlation") +
+  facet_wrap( ~ data, ncol = 4) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 22),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    legend.position = 'none',
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 24)
+  )
+dev.off()
+
+```
+
+## Known co-expressed genes
+```{r}
+### several genes from GoBo paper
+row.names(read.ruv.norm) <- brca.geneAnnot$gene_name.
+coexpr.genes <- c('CCNB1', 'CENPE', 'AURKB', 'PLK1')
+df.coexpr.genes <- t(brca.ruv[coexpr.genes , ])
+p <- lapply(
+  c(2:4), 
+  function(x){
+    gene <- coexpr.genes[x]
+    p <- ggplot(df.coexpr.genes, aes(x = CCNB1, y = df.coexpr.genes[,x])) +
+    geom_point(color = 'gray40') +
+    xlab(expression(Log[2] ~ "expression CCNB1")) +
+    ylab(bquote(Log[2] ~ .(paste0('expression ', gene)))) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1),
+      axis.title.x = element_text(size = 18),
+      axis.title.y = element_text(size = 18),
+      plot.title = element_text(size = 15),
+      axis.text.x = element_text(size = 14),
+      axis.text.y = element_text(size = 14),
+      legend.text = element_text(size = 10),
+      legend.title = element_text(size = 14),
+      strip.text.x = element_text(size = 10)
+    ) +
+    ggpubr::stat_cor(
+      aes(label = ..r.label..),
+      label.x.npc = .7,
+      label.y.npc = .2,
+      method = 'spearman',
+      hjust = 0,
+      size = 6,
+      col = 'cyan',
+      cor.coef.name = "rho"
+    )
+    p
+  })
+tiff(paste0(
+    brca.fig.path,
+    'TCGA_BRCA_NormalizationAssessment_KnownCoexprGenesRuv.tiff'),
+    width = 4500,
+    height = 1500,
+    res = 400
+    )
+do.call(gridExtra::grid.arrange, c(p, ncol = 3))
+dev.off()
+
+```

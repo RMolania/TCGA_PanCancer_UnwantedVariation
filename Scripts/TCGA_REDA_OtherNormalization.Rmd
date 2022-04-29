@@ -1,0 +1,1599 @@
+---
+title: "TCGA_READ_OtherNormalization"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+# Other normalization methods
+There are 
+
+Here, we compare the performance of RUV-III-PRPS with the ComBat-Seq [Yuqing Zhang et.al](https://academic.oup.com/nargab/article/2/3/lqaa078/5909519) and RUVs methods[Davide Risso, et.al ](http://www.nature.com/nbt/journal/v32/n9/full/nbt.2931.html)
+
+## ComBat-seq
+The ComBat_seq method is implemented in the sva R/bioconductor package. The ComBat_seq methods requires batch information, so we use plates as a source of unwanted variation.
+
+```{r comBatSeqNorm, message=F, error=F, warning=F}
+combat.seq.norm <- sva::ComBat_seq(
+  counts = raw.count.data,
+  batch = read.cancer.se$plate_RNAseq
+  )
+combat.seq.norm <- log2(combat.seq.norm + 1)
+```
+
+### Consensus molecular subtypes of ComBat-seq normalized data
+We apply the CMS classifier on the ComBat-seq normalized data.
+
+```{r CmsOnComBat, message=FALSE, error=FALSE, fig.align='center', fig.dim= c(5,5), fig.cap='Consensus molecular subtypes (CMS) indentification using the CMScaller R package in the RUV-III normalized data.'}
+set.seed(2010221018)
+row.names(combat.seq.norm) <- as.data.frame(
+  SummarizedExperiment::rowData(read.cancer.se)
+  )$entrezgene_id_BioMart
+cms.cluster.cancer.combat <- CMScaller::CMScaller(
+  emat =  combat.seq.norm,
+  RNAseq = FALSE,
+  FDR = 0.05,
+  verbose = FALSE
+  )
+### Addin new cms lables
+index <- match(
+  row.names(cms.cluster.cancer.combat),
+  colnames(read.cancer.se)
+  )
+read.cancer.se$cms.cancer.combat[index] <- as.character(cms.cluster.cancer.combat$prediction)
+index <- is.na(read.cancer.se$cms.cancer.combat)
+read.cancer.se$cms.cancer.combat[index] <- 'Not classified'
+
+read.cancer.se$cms.cancer.combat <- factor(
+  x = read.cancer.se$cms.cancer.combat,
+  levels = c(
+    'CMS1',
+    'CMS2',
+    'CMS3',
+    'CMS4',
+    'Not classified'
+    )
+)
+```
+
+## RUVSeq
+In the RUVSeq R\Bioconductor package there are two methods, RUVg and RUVs, that produce normalized counts data. The RUVg method uses a set of negative control genes to estimates the factors of unwanted variation which can be used as covariates in differential gene expression analysis. According to the authors recommendation (https://bioconductor.org/packages/release/bioc/vignettes/RUVSeq/inst/doc/RUVSeq.pdf) the normalized counts can be used just for exploration, as removing the unwanted factors from the counts can also remove part of a factor of interest.
+
+### RUVs
+We have applied the RUVs method on the data with the same negative control genes that we used for the RUV-III-PRPS
+ 
+```{r}
+row.names(raw.count.data) <-  as.data.frame(
+  SummarizedExperiment::rowData(read.cancer.se)
+  )$hgnc_symbol_BioMart
+
+replicat.samples <- RUVSeq::makeGroups(
+  read.cancer.se$cms.cancer.fpkmUq
+  )
+ruvg.s <- RUVSeq::RUVs(
+  x = raw.count.data,
+  cIdx = negative.control.genes, 
+  scIdx = replicat.samples,
+  k = 20
+  )
+ruvgs.norm <- log2(ruvg.s$normalizedCounts + 1)
+
+selected.gene <- c('DDX23', 'LARP7')
+pp <- lapply(
+  selected.gene, 
+  function(x){
+    df <- data.frame(
+      Raw.counts = log2(raw.count.data[x ,] + 1),
+      RUVs = ruvgs.norm[x ,],
+      samples = c(1:ncol(raw.count.data))) %>%
+      tidyr::pivot_longer(-samples, names_to = 'Dataset', values_to = 'Expr') %>%
+      data.frame()
+    ggplot(data = df, aes(x = samples, y = Expr)) +
+      geom_point() +
+      facet_wrap(~ Dataset) +
+      ylab('Gene expression') +
+      xlab('Samples') +
+      ggtitle(x) +
+      theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = 'black', size = 1),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        plot.title = element_text(size = 15),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 10),
+        legend.title = element_text(size = 14),
+        strip.text.x = element_text(size = 14)
+      )
+  })
+do.call(
+  gridExtra::grid.arrange, 
+  c(pp[1], pp[2])
+  )
+```
+
+### RUVg
+We also perform the RUVs method that is implemented in the RUVSeq package R/Bioconductor package[Davide Risso, et.al ](http://www.nature.com/nbt/journal/v32/n9/full/nbt.2931.html). This method requires a set of negative control genes. So, we use the same set of negative control genes that was used for the RUV-III-PRPS normalization.
+
+```{r}
+ruvg.norm <- RUVSeq::RUVg(
+  x = raw.count.data,
+  cIdx = negative.control.genes,
+  k = 20
+  )
+ruvg.norm <- log2(ruvg.norm$normalizedCounts + 1)
+```
+
+### Consensus molecular subtypes of RUVSeq normalized data
+We apply the CMS classifier on the RUV-III normalized data.
+
+```{r CmsOnRuvSeq, message=FALSE, error=FALSE, fig.align='center', fig.dim= c(5,5), fig.cap='Consensus molecular subtypes (CMS) indentification using the CMScaller R package in the RUV-III normalized data.'}
+set.seed(2010221019)
+row.names(ruvg.norm) <- as.data.frame(
+  SummarizedExperiment::rowData(read.cancer.se)
+  )$entrezgene_id_BioMart
+cms.cluster.cancer.ruvs <- CMScaller::CMScaller(
+  emat =  ruvg.norm,
+  RNAseq = FALSE,
+  FDR = 0.05,
+  verbose = FALSE
+  )
+### Addin new cms lables
+index <- match(
+  row.names(cms.cluster.cancer.ruvs),
+  colnames(read.cancer.se)
+  )
+read.cancer.se$cms.cancer.ruvg[index] <- as.character(cms.cluster.cancer.ruvs$prediction)
+index <- is.na(read.cancer.se$cms.cancer.ruvg)
+read.cancer.se$cms.cancer.ruvg[index] <- 'Not classified'
+
+read.cancer.se$cms.cancer.ruvg <- factor(
+  x = read.cancer.se$cms.cancer.ruvg,
+  levels = c(
+    'CMS1',
+    'CMS2',
+    'CMS3',
+    'CMS4',
+    'Not classified'
+    )
+)
+```
+
+## Performance assessments for normalizations
+Here, we compare the performance of the RUV-III normalized data with the TCGA FPKM and FPKM.UQ datasets.\
+We create a new SummarizedExperiment object that contains the RUV-III normalized data as well as the TCGA normalized datasets.
+
+```{r SeOnAllData, message=FALSE, warning=FALSE}
+row.names(combat.seq.norm) <- as.data.frame(
+  SummarizedExperiment::rowData(read.cancer.se)
+  )$gene_id.v
+row.names(ruvg.norm) <- as.data.frame(
+  SummarizedExperiment::rowData(read.cancer.se)
+  )$gene_id.v
+names(read.cancer.se) <- as.data.frame(
+  SummarizedExperiment::rowData(read.cancer.se)
+  )$gene_id.v
+row.names(ruviii.prps.norm) <- as.data.frame(
+  SummarizedExperiment::rowData(read.cancer.se)
+  )$gene_id.v
+
+read.cancer.se.2 <- SummarizedExperiment::SummarizedExperiment(
+  assays = list(
+    HTseq_counts = SummarizedExperiment::assay(
+      read.cancer.se,
+      'HTseq_counts'),
+    HTseq_FPKM = SummarizedExperiment::assay(
+      read.cancer.se,
+      'HTseq_FPKM'),
+    HTseq_FPKM.UQ = SummarizedExperiment::assay(
+      read.cancer.se,
+      'HTseq_FPKM.UQ'),
+    RUV_III = ruviii.prps.norm,
+    ComBat_seq = combat.seq.norm,
+    RUVg = ruvg.norm
+    ),
+  colData = S4Vectors::DataFrame(
+    SummarizedExperiment::colData(read.cancer.se)),
+  rowData = as.data.frame(
+    SummarizedExperiment::rowData(read.cancer.se))
+  )
+
+row.names(read.cancer.se.2) <- SummarizedExperiment::rowData(
+  read.cancer.se.2
+  )$hgnc_symbol_BioMart
+```
+
+### Library size effects
+We perform PCA on all the data sets. Large library size variation between samples profiled in 2010 and the other samples are clearly visible in the PCA plots of the raw count data. Although the FPKM and FPKM.UQ normalizations reduce the variation caused by library size differences, both methods exhibited shortcomings, e.g. by not fully mixing samples from different times (figure \@ref(fig:LsEffectsAllPca)). PCA plots of the RUV-III normalized data illustrate this normalization improved upon the FPKM and FPKM.UQ normalizations in removing the library size effects from the data.
+
+```{r LsEffectsAllPca, message=FALSE, warning=FALSE, fig.align='center', fig.dim=c(12,12), fig.cap='The scatter plots of first three principal components for raw counts, FPKM, FPKM.UQ and RUV-III normalized data coloured by key time points (2010 vs. 2011-2014).'}
+normalizations <- names(
+  SummarizedExperiment::assays(read.cancer.se.2)
+  )
+pca.all <- lapply(
+  normalizations,
+  function(x){
+    .pca(
+      data = as.matrix(
+        SummarizedExperiment::assay(read.cancer.se.2, x)
+        ),
+      is.log = TRUE)
+  })
+names(pca.all) <- normalizations
+read.sampleAnnot <- as.data.frame(
+  SummarizedExperiment::colData(read.cancer.se)
+  )
+pp <- lapply(
+  normalizations,
+  function(x){
+    pcs <- pca.all[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'Time (years)',
+      group = read.cancer.se$time.points,
+      color = major.times.colors,
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .5)
+    p
+  })
+do.call(
+  gridExtra::grid.arrange,
+  c(pp[[1]],
+    pp[[2]],
+    pp[[3]],
+    pp[[4]],
+    pp[[5]],
+    pp[[6]],
+    ncol = 4)
+  )
+```
+
+#### Association between PCs and library size
+The first 5-10 PCs should have weak association with library size in an well- normalized dataset. The linear regression between the first ten PC, taken cumulatively, and library size clearly show the RUV-III outperforms other normalization (figure \@ref(fig:LsEffectsAllLreg)).
+
+```{r LsEffectsAllLreg, message=FALSE, warning=FALSE, fig.cap='Left-hand side: A plot showing the R-squared (R2) of linear regression between library size and up to the first 10 principal components (taken cumulatively) for different normalization methods. Right-hand side: percentage of PCs variation.'}
+# PCA variation
+dataSets.colors.2 <- wesanderson::wes_palette(
+  n = 4,
+  name = "GrandBudapest1")[c(1,2,4,3)]
+dataSets.colors.2 <- c(dataSets.colors, 'blue', 'darkgreen')
+
+names(dataSets.colors.2) <- c(
+  'Raw counts',
+  'FPKM',
+  'FPKM.UQ',
+  'RUV-III',
+  'ComBat_seq',
+  'RUVg'
+  )
+
+nPCs <- 10
+lreg.pcs.ls<- lapply(
+  normalizations,
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u
+    tcga.ls.rSquared <- sapply(
+      1:nPCs,
+      function(y) {
+        lm.ls <- summary(lm(
+          read.sampleAnnot$libSize ~ pcs[, 1:y])
+          )$r.squared
+    })
+  })
+names(lreg.pcs.ls) <- normalizations
+
+pcs.ls.lnreg <- as.data.frame(lreg.pcs.ls) %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III,
+    ComBat_seq = ComBat_seq,
+    RUVg = RUVg
+  ) %>%
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'r.sq') %>%
+  dplyr::mutate(
+    datasets = factor(
+      datasets,
+      levels = c(
+        'Raw counts',
+        'FPKM',
+        'FPKM.UQ',
+        'RUV-III',
+        'ComBat_seq',
+        'RUVg'
+        ))
+    )
+
+p1 <- ggplot(pcs.ls.lnreg, aes(x = pcs, y = r.sq, group = datasets)) +
+  geom_line(aes(color = datasets), size = 1) +
+  geom_point(aes(color = datasets), size = 3) +
+  xlab('PCs') + ylab (expression("R"^"2")) +
+  scale_color_manual(
+    values = c(dataSets.colors.2),
+    name = 'Datasets',
+    labels = c('Raw counts', 'FPKM','FPKM.UQ', 'RUV-III', 'ComBat-seq', 'RUVs')) +
+  scale_x_continuous(
+    breaks = (1:10),
+    labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(
+    breaks = scales::pretty_breaks(n = 5),
+    limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.x = element_text(size = 12, angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+
+
+pcs.variation <- lapply(
+  normalizations,
+  function(x){
+    pca.all[[x]]$variation[1:10]
+  })
+names(pcs.variation) <- normalizations
+pcs.variation <- as.data.frame(pcs.variation) %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III
+  ) %>%
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'var') %>%
+  dplyr::mutate(
+    datasets = factor(
+      datasets,
+      levels = c(
+        'Raw counts',
+        'FPKM',
+        'FPKM.UQ',
+        'RUV-III',
+        'ComBat_seq',
+        'RUVs'))) %>%
+  data.frame()
+
+p2 <- ggplot(pcs.variation, aes(x = pcs, y = var, group = datasets)) +
+  geom_line(aes(color = datasets), size = 1) +
+  geom_point(aes(color = datasets), size = 3) +
+  xlab('PCs') +
+  ylab ('Percentage of explained variance') +
+  scale_color_manual(
+    values = dataSets.colors.2,
+    labels = c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'RUV-III'), name = 'Datasets') +
+  scale_x_continuous(
+    breaks = (1:10),
+    labels = c(paste0('PC', 1:10) )) +
+  # scale_y_continuous(
+  #   breaks = scales::pretty_breaks(n = 5),
+  #   limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+
+gridExtra::grid.arrange(
+  p1,
+  p2,
+  ncol = 2
+  )
+```
+
+#### DE analysis between sample with low and high library size
+
+Further, we evaluate the effects of library differences on the data using differential expression (DE) analyses between sample with low and high library size (2010 vs. 2011:2014). DE analyses were performed using the Wilcoxon signed-rank test with log2 transformed of the raw counts and normalized datasets.  In the absence of any library size effects, the histogram of the resulting unadjusted p-values should be uniformly distributed (figure \@ref(fig:LsEffectsAllDe)).
+
+```{r LsEffectsAllDe, message=FALSE, warning=FALSE, fig.cap='P-value histograms obtained from differential expression analysis between samples with low and high library size.'}
+de.ls.high.low <- lapply(
+  normalizations,
+  function(x){
+    data <- SummarizedExperiment::assay(read.cancer.se, x)
+    de <- .wilcoxon.test(
+      expr.data = data,
+      is.log = TRUE,
+      variable = read.sampleAnnot$time.points,
+      n.cores = 5)
+    de
+  })
+names(de.ls.high.low) <- normalizations
+pval.de.time.interval <- lapply(
+  normalizations,
+  function(x){
+    de.ls.high.low[[x]]$pvalue
+  })
+names(pval.de.time.interval) <- normalizations
+pval.de.time.interval <- pval.de.time.interval %>%
+  as.data.frame() %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III) %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'datasets',
+    values_to = 'p.val') %>%
+  dplyr::mutate(datasets = factor(
+    datasets,
+    levels = c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'RUV-III'))
+    )
+### Plot
+ggplot(pval.de.time.interval, aes( p.val)) +
+  geom_histogram(binwidth = .1) +
+  scale_x_continuous(breaks = c(seq(0, 1, .5))) +
+  xlab('p_values') + ylab('Frequency') +
+  facet_wrap( ~ datasets, ncol = 4) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16),
+    plot.title = element_text(size = 18),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 16)
+  )
+```
+
+#### Association between gene expression and library size
+Ideally, normalized gene expression values should have no significant association with library size in RNA-seq data. The relationship between individual normalized gene expression measurements and library size are assessed using Spearman correlation. Figure \@ref(fig:LsEffectsAllCorr) shows histograms of Spearman correlation coefficients between the gene expression levels and library size.
+
+```{r LsEffectsAllCorr, message=FALSE, warning=FALSE, fig.dim=c(12, 6), fig.cap='histograms of Spearman correlation coefficients between the gene expression levels and library size.'}
+corr.geneLs <- lapply(
+  normalizations,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(read.cancer.se, x)),
+      is.log = TRUE,
+      variable = read.sampleAnnot$libSize,
+      method = 'spearman',
+      n.cores = 5,
+      group = 'ls'
+      )
+    })
+names(corr.geneLs) <- normalizations
+gene.ls.corr.coeff <- lapply(
+  normalizations,
+  function(x) corr.geneLs[[x]]$ls_rho
+  )
+names(gene.ls.corr.coeff) <- normalizations
+gene.ls.corr.coeff <- gene.ls.corr.coeff %>%
+  as.data.frame() %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III) %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'datasets',
+    values_to = 'corr.coeff') %>%
+  dplyr::mutate(datasets = factor(
+    datasets,
+    levels = c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'RUV-III'))
+    )
+# plot
+ggplot(gene.ls.corr.coeff, aes(corr.coeff, fill = datasets)) +
+  geom_histogram(alpha = 0.7, position = "identity") +
+  xlab("Spearman correlation") +
+  ylab('Frequency') +
+  scale_fill_manual(values = dataSets.colors, guide = 'none') +
+    theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+```
+
+### Plates effects
+To examine plate effects and separate this variation from the large library size variation in the data, we perform our evaluation within each key time interval.
+
+#### PCA
+Here, we apply PCA within each key time interval.
+```{r PlateEffectsAllPca, message=FALSE, warning=FALSE}
+pca.main.time.all <- lapply(
+  levels(read.sampleAnnot$time.points),
+  function(x){
+    index <- read.sampleAnnot$time.points == x
+    pca.times  <- lapply(
+      normalizations,
+      function(y){
+        pcs <- .pca(
+          data = as.matrix(SummarizedExperiment::assay(read.cancer.se.2[ , index], y)),
+          is.log = TRUE)
+    })
+    names(pca.times) <- normalizations
+    return(pca.times)
+  })
+names(pca.main.time.all) <- paste0(
+  'Time_',
+  levels(read.sampleAnnot$time.points)
+  )
+```
+
+#### Vector correlation analysis
+We used the Rozeboom squared vector correlation to quantify the strength of (linear) relationships between two sets of variables such as the first k PCs (i.e. 1≤k≤10) and dummy variables representing time, batches, plates, and biological variables [(R.Molania, bioRxiv, 2021)](https://www.biorxiv.org/content/10.1101/2021.11.01.466731v1.article-metrics). Here, we perform the vector correlation between the first ten PCs and plates. Figure \@ref(fig:PlateEffectsAllCaa) shows that the RUV-III performs better compared to the other normalization.
+
+```{r PlateEffectsAllCaa, message=FALSE, warning=FALSE, fig.cap='A plot showing the vector correlation coefficient between plates and the first 10 principal components within each time interval'}
+cca.plates.time.interval <- lapply(
+  c(1:2),
+  function(x){
+    pca.times <- pca.main.time.all[[x]]
+    index.time <- read.cancer.se$time.points == levels(read.cancer.se$time.points)[x]
+    plates.dummies <- fastDummies::dummy_cols(read.cancer.se$plate_RNAseq[index.time])
+    plates.dummies <- plates.dummies[, c(2:ncol(plates.dummies))]
+    cca.plates <- lapply(
+      normalizations,
+      function(y){
+        pcs <- pca.times[[y]]$sing.val$u
+        sapply(
+          1:10,
+          function(z) {
+            cca.plates <- stats::cancor(
+              x = pcs[, 1:z, drop = FALSE],
+              y = plates.dummies)
+            1 - prod(1 - cca.plates$cor ^ 2)
+          })
+        })
+    names(cca.plates) <- normalizations
+    cca.plates
+    })
+
+names(cca.plates.time.interval) <- levels(read.cancer.se$time.points)
+
+plate.time.interval.cca <- lapply(
+  levels(read.cancer.se$time.points),
+  function(x){
+    as.data.frame(cca.plates.time.interval[[x]])
+  }) %>%
+  do.call(rbind, .) %>%
+  as.data.frame() %>%
+    dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III) %>%
+  dplyr::mutate(
+    pcs = c(1:10, 1:10),
+    time = rep(c('2010', '2011_2014'),
+               each = 10)) %>%
+  tidyr::pivot_longer(
+    -c(pcs,time),
+    names_to = 'datasets',
+    values_to = 'corr') %>%
+    dplyr::mutate(
+    datasets = factor(
+      datasets,
+      levels = c(
+        'Raw counts',
+        'FPKM',
+        'FPKM.UQ',
+        'RUV-III'))
+    ) %>%
+  data.frame(.)
+# Plot
+ggplot() + geom_point(
+    data = plate.time.interval.cca[plate.time.interval.cca$time == '2010', ],
+    aes(
+      x = pcs,
+      y = corr ,
+      group = datasets,
+      color = datasets
+    ), size = 3) +
+  geom_line(data = plate.time.interval.cca[plate.time.interval.cca$time == '2010',],
+            aes(
+              x = pcs,
+              y = corr ,
+              group = datasets,
+              color = datasets
+            ),
+            linetype = "dashed",
+            size = 1) +
+  geom_point(
+    data = plate.time.interval.cca[plate.time.interval.cca$time != '2010',],
+    aes(
+    x = pcs,
+    y = corr ,
+    group = datasets,
+    color = datasets
+  ), size = 3) +
+  scale_color_manual(
+    values = dataSets.colors,
+    name = 'Datasets',
+    labels = c('Raw counts', 'FPKM','FPKM.UQ', 'RUV-III')) +
+  geom_line(
+    data = plate.time.interval.cca[plate.time.interval.cca$time != '2010',],
+    aes(
+    x = pcs,
+    y = corr,
+    group = datasets,
+    color = datasets
+  ), size = 1) +
+   xlab('PCs') +
+  ylab("Vector correlation") +
+  scale_color_manual(
+    values = dataSets.colors,
+    labels = c('Raw counts', 'FPKM','FPKM.UQ', 'RUV-III')) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+```
+
+#### ANOVA
+Further, we use ANOVA to evaluate the plates effects on individual genes expression.
+
+
+```{r, warning=F, message=F, error=F, fig.cap='Boxplots of log2 F statistics obtained from ANOVA within each time points, for gene expression with plate as a factor'}
+ftest.genePlates.time.interval <- lapply(
+  levels(read.cancer.se$time.points),
+  function(x){
+    index.time <- read.cancer.se$time.points == x
+    ftest.plates.time <- lapply(
+      normalizations,
+      function(x){
+        ftest.plates <-
+          .Ftest(
+            data = as.matrix(SummarizedExperiment::assay(
+              read.cancer.se[, index.time],
+              x)
+              ),
+            variable = read.cancer.se$plate_RNAseq[index.time],
+            is.log = TRUE,
+            n.cores = 5
+          )
+      })
+    names(ftest.plates.time) <- normalizations
+    ftest.plates.time
+  })
+names(ftest.genePlates.time.interval) <- levels(
+  read.cancer.se$time.points
+  )
+gene.plate.time.interval.ftest <- lapply(
+  levels(read.cancer.se$time.points),
+  function(x){
+    sub <- lapply(
+      normalizations,
+      function(y){
+        ftest.genePlates.time.interval[[x]][[y]]$FValue
+      })
+   sub <-  do.call(cbind, sub)
+   colnames(sub) <- normalizations
+   sub
+  }) %>%
+  do.call(rbind, .) %>%
+    as.data.frame() %>%
+    dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III) %>%
+  dplyr::mutate(
+    time = rep(c('2010', '2011:2014'),
+               each = nrow(read.cancer.se)) ) %>%
+    tidyr::pivot_longer(
+    -c(time),
+    names_to = 'datasets',
+    values_to = 'f.val') %>%
+    dplyr::mutate(
+    datasets = factor(
+      datasets,
+      levels = c(
+        'Raw counts',
+        'FPKM',
+        'FPKM.UQ',
+        'RUV-III'))
+    ) %>%
+  data.frame(.)
+
+### Plot
+ggplot(
+  data = gene.plate.time.interval.ftest,
+  aes(x = datasets, y = log2(f.val), fill = time)) +
+  geom_boxplot(
+    position = position_dodge(width = .7),
+    width = 1,
+    alpha = 0.8,
+    lwd = .7
+  ) +
+  scale_fill_manual(values = major.times.colors) +
+  ylab(expression(Log[2]~'F statistics')) +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+```
+
+### CMS clusters
+Here, we evaluate the performance of different normalization methods in separating the CMS clusters.
+#### PCA
+PCA plots of the RUV-III normalized data show distinct clusters of the consensus molecular subtypes (CMS) for the READ RNA-seq samples, whereas these subtypes are not as clearly separated in the TCGA normalized datasets.
+
+```{r CmsAllPca, message=FALSE, warning=FALSE, error=FALSE, results=FALSE, fig.dim=c(12,12), fig.cap='PCA plots coloured by CMS with each key time interval in the TCGA READ RNA-seq data normalized by different methods. A) PCA plots of different datasets (from top to bottom: raw counts, FPKM, FPKM.UQ and RUV-III normalized data for samples profiled in 2010. B) Same as A, for samples profiled in 2011-2014. The CMS were obtained separately within each time interval.'}
+cms.cols <- c(
+  'cms.cancer.rawCounts',
+  'cms.cancer.fpkm',
+  'cms.cancer.fpkmUq',
+  'cms.cancer.ruv',
+  'cms.cancer.combat',
+  'cms.cancer.ruvg'
+  )
+pp <- lapply(
+  normalizations,
+  function(x){
+    pcs <- pca.all[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'Time (years)',
+      group = read.sampleAnnot[ ,cms.cols[1]],
+      color = cms.colors,
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .5)
+    p
+  })
+do.call(
+  gridExtra::grid.arrange,
+  c(pp[[1]],
+    pp[[2]],
+    pp[[3]],
+    pp[[4]],
+    pp[[5]],
+    pp[[6]],
+    ncol = 4)
+  )
+```
+
+#### Vector correlations
+Figure (\@ref(fig:CmsAllCca)) shows the vector correlation coefficient between CMS subtypes and  the first 10 principal components for different normalization methods. Ideally, we should see high association between the PCs and the CMS.
+
+```{r CmsAllCca, message=FALSE, warning=FALSE, fig.cap='A plot showing the vector correlation coefficient between CMS subtypes and up to the first 10 principal components'}
+nPCs <- 10
+cca.cms <- lapply(
+  c(1:6),
+  function(x){
+    cms.dummies <- fastDummies::dummy_cols(read.sampleAnnot[ , cms.cols[x]])
+    cms.dummies <- cms.dummies[, c(2:ncol(cms.dummies))]
+    cms.caa.allPcs <- sapply(
+      1:nPCs,
+      function(y) {
+        cms.caa <- stats::cancor(
+          x = pca.all[[x]]$sing.val$u[, 1:y, drop = FALSE],
+          y = cms.dummies)
+        1 - prod(1 - cms.caa$cor^2)
+    })
+  })
+names(cca.cms) <- normalizations
+pcs.cms.cca <- as.data.frame(cca.cms) %>%
+  dplyr::rename(
+    'Raw counts' = HTseq_counts,
+    FPKM = HTseq_FPKM,
+    FPKM.UQ = HTseq_FPKM.UQ,
+    'RUV-III' = RUV_III,
+    ComBat_seq = ComBat_seq,
+    RUVg = RUVg
+  ) %>%
+  dplyr::mutate(pcs = c(1:10)) %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'datasets',
+    values_to = 'vec.corr') %>%
+  dplyr::mutate(
+    datasets = factor(
+      datasets,
+      levels = c(
+        'Raw counts',
+        'FPKM',
+        'FPKM.UQ',
+        'RUV-III',
+        'ComBat_seq',
+        'RUVg'
+        ))
+    ) %>%
+  data.frame(.)
+# Plot
+ggplot(pcs.cms.cca, aes(x = pcs, y = vec.corr, group = datasets)) +
+  geom_line(aes(color = datasets), size = 1) +
+  geom_point(aes(color = datasets), size = 3) +
+  xlab('PCs') +
+  ylab (expression("Vector correlation")) +
+  scale_color_manual(
+    values=c(dataSets.colors.2),
+    labels = c('Raw counts', 'FPKM','FPKM.UQ', 'RUV-III', 'ComBat-seq', 'RUVs'),
+    guide = FALSE) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+```
+
+#### Survival analysis-KM plot
+```{r}
+read.sampleAnnot <- as.data.frame(SummarizedExperiment::colData(read.cancer.se))
+library(survcomp)
+cols <- c(
+  'Sample',
+  'age_at_initial_pathologic_diagnosis_liu',
+  'OS.time_liu',
+  'OS_liu',
+  'cms.cancer.fpkm',
+  'cms.cancer.fpkmUq',
+  'cms.cancer.ruv',
+  'cms.cancer.combat',
+  'cms.cancer.ruvg'
+  
+)
+
+new.info <- read.sampleAnnot[ , cols]
+new.info <- new.info[ complete.cases(new.info) , ]
+
+colnames(new.info)[5:9] <- c(
+  'FPKM',
+  'FPKM.UQ',
+  'RUV',
+  'ComBat',
+  'RUV-Seq'
+  )
+set.seed(2023091423)
+cms.survival <- lapply(
+  colnames(new.info)[5:9],
+  function(x){
+    index <- new.info[,x] != 'Not classified' & new.info[,x] != 'Adjacent normal' 
+    survival.plot <- survival_plot(
+      data = ruviii.prps.norm,
+      stratify = 'covariate',
+      annot = new.info[index , ],
+      scoreCol = NULL,
+      covariate = x,
+      gene = NULL,
+      isCategoricalCov = TRUE,
+      timeCol = "OS.time_liu",
+      eventCol = "OS_liu",
+      mainTitle1 = x,
+      nGroup = NULL,
+      confInt = FALSE,
+      ylabel = "Survival",
+      cols = c('orange','royalblue2','plum2','seagreen3'),
+      nColLegend = 1,
+      plotType = "autoplot"
+    )$plot +  theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = 'black', size = 1),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        plot.title = element_text(size = 15),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        strip.text.x = element_text(size = 10)
+      )
+  })
+ggpubr::ggarrange(
+  cms.survival[[1]],
+  cms.survival[[2]],
+  cms.survival[[3]],
+  cms.survival[[4]],
+  cms.survival[[5]]
+  )
+```
+
+#### Silhouette coefficient  ann ARI index analyses
+We use Silhouette coefficients analysis to assess the separation of the CCMS. The silhouette function uses Euclidean distance to calculate both the similarity between one patient and the other patients in each cluster, and the separation between patients in different clusters. A better normalization method will lead to higher silhouette coefficients for the CMS.\
+The Adjusted Rand Index is the corrected-for-chance version of the Rand Index. The ARI measures the percentage of matches between two label lists. We used the ARI to assess the performance of normalization methods in terms of sample subtypes separation. We first calculated principal components and used the first 3 PC to calculate ARI.
+
+```{r CmsAllSliho, message=FALSE, warning=FALSE, fig.dim=c(8,4), fig.cap='Silhouette coefficients and ARI index for mixing samples from two different key time intervals'}
+silCoef.cms <- sapply(
+  c(1:6),
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.all[[x]]$sing.val$u,
+      variable = read.sampleAnnot[, cms.cols[x]],
+      nPCs = 4)
+    })
+names(silCoef.cms) <- normalizations
+pcs.cms.silCoef <- as.data.frame(silCoef.cms) %>%
+  dplyr::rename(silCoef = 'silCoef.cms') %>%
+  dplyr::mutate(datasets = c(
+    'Raw counts',
+    'FPKM',
+    'FPKM.UQ',
+    'RUV-III')) %>%
+  dplyr::mutate(datasets = factor(
+    datasets,
+    levels = c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'RUV-III'))
+    )
+p1 <- ggplot(pcs.cms.silCoef, aes(x = datasets, y = silCoef)) +
+  geom_col() +
+  ylab('Silhouette coefficient') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# ARI
+nPCs <- 3
+set.seed(2011110837)
+ari.cms <- sapply(
+  c(1:4),
+  function(x){
+    pcs <- pca.all[[x]]$sing.val$u[,1:nPCs]
+    BIC <- mclust::mclustBIC(data = pcs)
+    mod <- mclust::Mclust(data = pcs, x = BIC, G = 4)
+    mclust::adjustedRandIndex(
+      mod$classification,
+      read.sampleAnnot[, cms.cols[x]]
+      )
+    })
+names(ari.cms) <- normalizations
+pcs.cmsl.ari <- as.data.frame(ari.cms) %>%
+  dplyr::rename(ari = 'ari.cms') %>%
+  dplyr::mutate(datasets = c(
+    'Raw counts',
+    'FPKM',
+    'FPKM.UQ',
+    'RUV-III')) %>%
+  dplyr::mutate(datasets = factor(
+    datasets,
+    levels = c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'RUV-III'))
+    )
+
+# Plot
+p2 <- ggplot(pcs.cmsl.ari, aes(x = datasets, y = ari)) +
+  geom_col() +
+  ylab('ARI') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+# Gene-level counts are not proportional to library size
+The FPKM and FPKM.UQ normalizations rely on global scale factors computed based on library size or upper quartiles of samples in the raw count data to remove library size effects. These methods assume that gene-level counts all are proportional to the global scale factors. However, we show that in the READ raw count data different groups of genes exhibit different relationships to the global scale factors used in the FPKM and FPKM.UQ normalizations.\
+The first group consists of genes whose counts are proportional to the global scale factors. For these genes, the FPKM and FPKM.UQ normalizations are adequate to remove the association between library size variation and gene expression. The DEAD-Box Helicase 23 (DDX23) gene is an example from this group (figure \@ref(fig:lsGeneLevels), first row). The second group includes genes whose expression levels are greater than those expected using the global scaling factors, and so those factors are insufficient for adjusting their expression levels to be independent of library size. The La Ribonucleoprotein 7 (LARP7)_gene represents the behavior of genes in this group (figure \@ref(fig:lsGeneLevels), second row). The third group contains genes such as AlkB Homolog 7 (ALKBH7), whose expression levels are not associated with library size in the raw count data. Then, the FPKM and FPKM.UQ normalizations introduce the library size variation to the expression levels of genes in this group (figure \@ref(fig:lsGeneLevels), third row). Finally, there are genes such as Transmembrane Protein 160 (TMEM160) whose expression levels relate to library size in a manner opposite to that motivating the use of global scaling factors. Applying scaling factors to such genes exacerbates rather than removes variation associated with library size (figure \@ref(fig:lsGeneLevels), fourth row).\
+Note that we found the same issue in the TCGA RNA-seq datasets such as kidney chromophobe and uveal melanoma, where samples were profiled using a single plate. We refer to our vignette for on library size normalization.
+
+```{r lsGeneLevels, warning=F, message=F, fig.dim=c(12,12), fig.cap='Expression patterns of four genes (DDX23, LARP7, ALKBH7, TMEM160) whose counts have different relationships with the global scaling factors calculated from the READ raw count data.'}
+row.names(read.cancer.se) <- SummarizedExperiment::rowData(
+  read.cancer.se
+  )$hgnc_symbol_BioMart
+selected.genes <- c(
+  'LARP7',
+  'ALKBH7',
+  'TMEM160',
+  'DDX23')
+
+
+pp <- lapply(
+  selected.genes,
+  function(i){
+      df <- data.frame(
+    Raw.counts = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'HTseq_counts'))[i, ],
+    FPKM = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'HTseq_FPKM'))[i , ],
+    FPKM.UQ = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'HTseq_FPKM.UQ'))[i , ],
+    RUV.III = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'RUV_III'))[i , ],
+    RUVg = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'RUV_III'))[i , ],
+    samples = c(1:166),
+    time = read.cancer.se$time.points
+  ) %>%
+  tidyr::pivot_longer(
+    -c(samples, time),
+    names_to = 'datasets',
+    values_to = 'expr') %>%
+    dplyr::mutate(datasets = replace(
+      datasets,
+      grep('RUV.III', datasets), 'RUV-III')) %>%
+    dplyr::mutate(datasets = replace(
+      datasets, grep(
+        'Raw.counts', datasets), 'Raw counts')) %>%
+    dplyr::mutate(datasets = factor(datasets,  levels = c(
+      'Raw counts',
+      'FPKM',
+      'FPKM.UQ',
+      'RUV-III',
+      'RUVg')) ) %>%
+  as.data.frame(.)
+  p <- ggplot(df, aes(x = samples, y = expr, color = time)) +
+    geom_point(size = 3) +
+    scale_color_manual(values = major.times.colors) +
+    ylab(expression(Log[2] ~ 'gene expression'))  +
+    xlab('Samples') +
+    facet_wrap( ~ datasets, scale = 'free', ncol = 4) +
+    ggtitle(i) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1),
+      plot.title = element_text(size = 14),
+      axis.title.x = element_text(size = 12),
+      axis.title.y = element_text(size = 12),
+      axis.text.x = element_text(size = 12),
+      axis.text.y = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      legend.title = element_text(size = 14),
+      strip.text.x = element_text(size = 15),
+      legend.position = 'none'
+    ) + 
+    guides(color = guide_legend(title = "Time (years)"))
+  p
+
+  })
+do.call(
+  gridExtra::grid.arrange,
+  c(pp,
+    ncol = 1)
+  )
+```
+
+# Co-expression analysis
+The large sample library size differences in the data can compromise down-stream analyses such as gene co-expression. This variation can have two effects on gene co-expression analysis. It can lead to apparent correlations between genes that are most likely un-correlated. For example, the correlation between the TATA Element Modulatory Factor 1 (TMF1) and Bcl-2-associated transcription factor 1 (BCLAF1) genes are ρ=0.8 and ρ=0.7 in the TCGA FPKM and FPKM.UQ normalized data, respectively (figure \@ref(fig:ArtiGeneCorr)). The role of the TMF1 gene has not been characterized in colon adenocarcinoma. Though, the BCLAF1 gene shows a pro-tumorigenic role in this cancer type [Xuexia Zhou et.al](https://www.nature.com/articles/ncomms5581). Then, one might suggest that the TMF1 gene expression may have a role in tumorigenesis in colon cancer due to it’s high correlation with the BCLAF1 gene expression. However, we see no such correlation in the RUV-III normalized data, which is consistent with the correlation obtain from an independent platform, namely the TCGA READ microarray data.
+
+```{r ArtiGeneCorr, warning=F, message=F, error=F, fig.dim=c(10,3), fig.cap='Gene co-expression analyses of TCGA READ RNA-seq data using different normalizations. Scatter plots of the gene expression levels of the MDH2 and EIF4H genes in the TCGA READ raw counts and differently normalized datasets. The red line shows overall association, and the green and yellow lines show associations between the gene expression within 2010 samples and within the rest of the samples, respectively.'}
+gg.theme.2 <- theme(
+  panel.background = element_blank(),
+  axis.line = element_line(colour = 'black', size = 1),
+  axis.title.x = element_text(size = 10),
+  axis.title.y = element_text(size = 10),
+  axis.text.x = element_text(size = 10),
+  axis.text.y = element_text(size = 10),
+  plot.title = element_text(size = 14),
+  plot.margin = unit(c(.2,.2,.2,.2), "cm"),
+  legend.position = 'none'
+)
+
+genes.x <- c('MDH2', 'TMF1')
+genes.y <- c('EIF4H', 'BCLAF1')
+plot.title <- c(
+  'Raw counts',
+  'FPKM',
+  'FPKM.UQ',
+  'RUV-III',
+  'ComBat-seq',
+  'RUVs'
+  )
+pp <- lapply(
+  c(1:2),
+  function(i){
+  p.all <- lapply(
+    c(1:6),
+    function(x){
+      if(x == 1){
+        df <- SummarizedExperiment::assay(read.cancer.se.2, normalizations[x])
+        df <- data.frame(
+          gene1 = df[genes.x[i] , ],
+          gene2 = df[genes.y[i] , ],
+          time = read.cancer.se$time.points
+        )
+      p <- ggplot(df, aes(x = gene1, y = gene2, color = time)) +
+        geom_point(pch = 19, size = 1) +
+        scale_color_manual(values = major.times.colors) +
+        xlab(bquote(Log[2] ~ .(paste0('expression ', genes.x[i])))) +
+        ylab(bquote(Log[2] ~ .(paste0('expression ', genes.y[i])))) +
+        ggtitle(plot.title[x]) +
+        ggpubr::stat_cor(
+          aes(color = time, label = ..r.label..),
+          method = "spearman" ,
+          label.x.npc = .67,
+          label.y.npc = .2,
+          hjust = 0,
+          r.accuracy = 0.1,
+          size = 3,
+          cor.coef.name = "rho"
+        ) +
+        geom_smooth(
+          method = 'lm',
+          formula = y ~ x,
+          col = 'red',
+          se = FALSE
+        ) +
+        geom_smooth(
+          aes(group = time),
+          method = 'lm',
+          formula = y ~ x,
+          se = FALSE) +
+        ggpubr::stat_cor(
+          aes(label = ..r.label..),
+          label.x.npc = .67,
+          label.y.npc = .33,
+          hjust = 0,
+          size = 3,
+          r.accuracy = 0.1,
+          col = 'red',
+          cor.coef.name = "rho"
+        )  +
+        gg.theme.2 +
+        guides(color = guide_legend(override.aes = list(size = 1)))
+      p
+      } else if(x > 1 & x< 7){
+        df <- SummarizedExperiment::assay(read.cancer.se.2,  normalizations[x])
+        df <- data.frame(
+          gene1 = df[genes.x[i] , ],
+          gene2 = df[genes.y[i] , ],
+          time = read.cancer.se$time.points
+        )
+          p <- ggplot(df, aes(x = gene1, y = gene2, color = time)) +
+            geom_point(pch = 19, size = 1) +
+            ylab('') +
+            xlab('') +
+            scale_color_manual(values = major.times.colors) +
+            ggtitle(plot.title[x]) +
+            ggpubr::stat_cor(
+              aes(color = time, label = ..r.label..),
+              method = "spearman" ,
+              label.x.npc = .67,
+              label.y.npc = .2,
+              hjust = 0,
+              size = 3,
+              r.accuracy = 0.1,
+              cor.coef.name = "rho"
+            ) +
+            geom_smooth(
+              method = 'lm',
+              formula = y ~ x,
+              col = 'red',
+              se = FALSE
+            ) +
+            geom_smooth(aes(group = time),
+                        method = 'lm',
+                        formula = y ~ x,
+                        se = FALSE) +
+            ggpubr::stat_cor(
+              aes(label = ..r.label..),
+              label.x.npc = .67,
+              label.y.npc = .33,
+              hjust = 0,
+              size = 3,
+              col = 'red',
+              r.accuracy = 0.1,
+              cor.coef.name = "rho"
+            )  +
+            gg.theme.2 +
+            guides(color = guide_legend(override.aes = list(size = 1)))
+          p
+          } else {
+          df <- data.frame(
+            gene1 = read.micro.array[genes.x[i] , ],
+            gene2 = read.micro.array[genes.y[i] , ]
+            )
+          p <- ggplot(df, aes(x = gene1, y = gene2)) +
+            geom_point(pch = 19, size = 1) +
+            ggtitle('Microarray') +
+            ylab('') +
+            xlab('') +
+            geom_smooth(
+              method = 'lm',
+              formula = y ~ x,
+              col = 'red',
+              se = FALSE
+            ) +
+            ggpubr::stat_cor(
+              aes(label = ..r.label..),
+              label.x.npc = .67,
+              label.y.npc = .13,
+              hjust = 0,
+              size = 3,
+              col = 'red',
+              r.accuracy = 0.1,
+              cor.coef.name = "rho"
+            )  +
+            gg.theme.2 +
+            guides(color = guide_legend(override.aes = list(size = 1)))
+          p
+        }
+    })
+  p.all
+  })
+do.call(
+  gridExtra::grid.arrange,
+  c(pp[[1]], ncol = 5)
+  )
+```
+
+On the other hand, the unwanted variation can obscure correlations between gene-gene expression levels that likely to be truly correlated. For example, the overall correlation between the Malate Dehydrogenase 2 (MDH2) and Eukaryotic Translation Initiation Factor 4H (EIF4H) genes is ρ = -0.05, whereas they exhibit a high correlation within each key time interval in the TCGA normalized data (\@ref(fig:ArtiGeneCorrExample)). The overall correlation of these genes was 0.7 in the RUV-III normalized data, consistent with what was seen in the TCGA READ microarray data. The MDH2 and EIF4H genes show important roles in cancer growth and metastasis, then, they are of clinically importance for cancer treatment [Zhan-Hong Chen et.al](https://pubmed.ncbi.nlm.nih.gov/31088567/), Hyun Seung Ban et.al(https://journals.plos.org/plosone/article?id=10.1371/journal.pone.0162568)]. The high correlation between these two genes revealed by RUV-III may suggest that they are involved in a co-expression network, which would be a novel finding.
+
+```{r ArtiGeneCorrExample, warning=F, message=F, error=F, fig.dim=c(10,3), fig.cap='Gene co-expression analyses of TCGA READ RNA-seq data using different normalizations. Scatter plots of the gene expression levels of the BCLAF1 and EIF4H genes in the TCGA READ raw counts and differently normalized datasets. The red line shows overall association, and the green and yellow lines show associations between the gene expression within 2010 samples and within the rest of the samples, respectively.'}
+do.call(
+  gridExtra::grid.arrange,
+  c(pp[[1]], ncol = 5)
+  )
+```
+
+### Artifactual gene co-expression
+We extended this analysis to all possible gene-gene correlations of the genes that have the highest correlation with library size in the FPKM.UQ normalized data (Figure 3B). Strikingly, the results show numerous strong but likely spurious correlations between gene pairs in the FPKM.UQ normalized data, whereas using RUV-III significantly reduced these correlations (Figure 3B).
+
+```{r ArtiGeneCorrHeatMap, warning=F, message=F, error=F, fig.cap=c('Gene co-expression analyses of TCGA READ RNA-seq data using different normalizations', 'Gene co-expression analyses of TCGA READ RNA-seq data using different normalizations ffffffghjhj')}
+# highly affected genes by major times
+ftest.geneMajorTime <- lapply(
+  normalizations,
+  function(x){
+    .Ftest(
+      data = as.matrix(SummarizedExperiment::assay(read.cancer.se, x)),
+      variable = read.cancer.se$time.points,
+      is.log = TRUE,
+      n.cores = 5
+      )
+  })
+names(ftest.geneMajorTime) <- normalizations
+
+selected.genes <- ftest.geneMajorTime$HTseq_FPKM.UQ$FValue %>%
+  tidyr::replace_na(., replace = 0)
+index.genes <- which(log2(selected.genes + 1) >  6.43)
+selected.genes <- ftest.geneMajorTime$HTseq_FPKM.UQ$Genes[index.genes]
+
+### correlation between genes and library size in TCGA FPKM.UQ
+corr.gene.ls.fpkm.uq <- corr.geneLs$HTseq_FPKM.UQ$ls_rho[index.genes]
+names(corr.gene.ls.fpkm.uq) <- selected.genes
+cor.matrix.fpkm.uq <- cor(t(
+  SummarizedExperiment::assay(
+    read.cancer.se[selected.genes, ],
+    'HTseq_FPKM.UQ')
+  ))
+
+### corrlation heat map
+col_fun <- circlize::colorRamp2(
+  c(-0.8, 0, 0.8),
+  c("navy", "white", "yellow3")
+  )
+ha.annot.tcag = ComplexHeatmap::HeatmapAnnotation(
+  Corr_coef = corr.gene.ls.fpkm.uq,
+  col = list(Corr_coef = col_fun),
+  show_legend = TRUE,
+  show_annotation_name = FALSE)
+corr.matrix.heatmap.fpkm.uq <- ComplexHeatmap::Heatmap(
+  cor.matrix.fpkm.uq,
+  col = rev(RColorBrewer::brewer.pal(
+    n = 11,
+    name = 'BrBG')),
+  show_row_names = FALSE,
+  name = 'Corr_coef',
+  show_column_names = FALSE,
+  top_annotation = ha.annot.tcag,
+  show_column_dend = FALSE,
+  show_row_dend = FALSE,
+  show_heatmap_legend = TRUE,
+  cluster_rows = TRUE,
+  cluster_columns = TRUE,
+  column_title = "TCGA FPKM.UQ"
+  )
+h <- ComplexHeatmap::draw(corr.matrix.heatmap.fpkm.uq)
+order.rows <- ComplexHeatmap::row_order(h )
+
+### RUV
+corr.gene.ls.ruv <- corr.geneLs$RUV_III$ls_rho[index.genes]
+names(corr.gene.ls.ruv) <- selected.genes
+corr.gene.ls.ruv <- corr.gene.ls.ruv[order.rows]
+cor.matrix.ruv <- cor(t(
+  SummarizedExperiment::assay(
+    read.cancer.se[selected.genes, ],
+    'RUV_III')
+  ))
+cor.matrix.ruv <- cor.matrix.ruv[order.rows , order.rows]
+
+col_fun = circlize::colorRamp2(
+  c(-0.8, 0, 0.8),
+  c("navy", "white", "yellow3")
+  )
+ha.annot.ruv = ComplexHeatmap::HeatmapAnnotation(
+  Corr_coef = corr.gene.ls.ruv,
+  col = list(Corr_coef = col_fun ),
+  show_legend = TRUE,
+  show_annotation_name = FALSE
+  )
+corr.matrix.heatmap.RUVIII <- ComplexHeatmap::Heatmap(
+  cor.matrix.ruv,
+  col = rev(RColorBrewer::brewer.pal(
+    n = 11,
+    name = 'BrBG')),
+   name = 'Corr_coef',
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  top_annotation = ha.annot.ruv,
+  show_column_dend = FALSE,
+  show_row_dend = FALSE,
+  show_heatmap_legend = TRUE,
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  column_title = "RUV-III"
+  )
+corr.matrix.heatmap.RUVIII
+```
+
+# Gene expression and survival
+Association between gene expression and survival outcomes of patients is another downstream analysis that is influenced by the library size variation in the TCGA READ RNA-seq data. For example, RUV-III, as opposed to the TCGA normalized data, revealed that the expression of the Ras-Related in Brain 18 (RAB18), and F-Box And Leucine Rich Repeat Protein 14 (FBXL14) genes are highly associated with overall survival outcome of patients in the data (figure \@ref(fig:GeneAndSurvival)).
+```{r GeneAndSurvival, warning=F, message=F, error=F, fig.dim=c(8,3), fig.cap='Association between gene expression and overall survival in the raw data and differently normalized  datasets of the TCGA READ RNA-Seq data'}
+
+## ggplot theme
+ggplot.them <- theme(
+  panel.background = element_blank(),
+  axis.line = element_line(colour = 'black', size = 1),
+  axis.title.x = element_text(size = 8),
+  axis.title.y = element_text(size = 8),
+  plot.title = element_text(size = 10),
+  axis.text.x = element_text(size = 5),
+  axis.text.y = element_text(size = 5),
+  legend.text = element_text(size = 8),
+  legend.title = element_text(size = 8),
+  strip.text.x = element_text(size = 8),
+  legend.position = 'bottom'
+)
+
+selected.genes <- c( 'FBXL14')
+data.sets.tcga <- c(
+  'read.rawCounts.cancer',
+  'read.fpkm.cancer',
+  'read.fpkmUq.cancer',
+  'read.ruv'
+  )
+for(i in selected.genes){
+  sur.gene <- lapply(
+  normalizations,
+  function(x){
+    p <- survival_plot(
+      data = as.data.frame(SummarizedExperiment::assay(read.cancer.se.2, x)),
+      stratify = 'expr',
+      annot = as.data.frame(SummarizedExperiment::colData(read.cancer.se.2)),
+      scoreCol =  NULL,
+      gene = i,
+      covariate = NULL,
+      isCategoricalCov = FALSE,
+      timeCol = "OS.time_liu",
+      eventCol = "OS_liu",
+      nGroup = 2,
+      confInt = FALSE,
+      mainTitle1 = i,
+      ylabel = "Survival",
+      cols = c(
+        brewer.pal(9, "Set1")[c(2, 3, 4, 5, 7, 8)],
+        brewer.pal(8, "Dark2")[c(8, 1, 4, 6)]),
+      nColLegend = 1,
+      plotType = "autoplot")
+    return(p$plot)
+  })
+  gridExtra::grid.arrange(
+    sur.gene[[1]] + ggplot.them,
+    sur.gene[[2]] + ggplot.them,
+    sur.gene[[3]] + ggplot.them,
+    sur.gene[[4]] + ggplot.them,
+    sur.gene[[5]] + ggplot.them,
+    sur.gene[[6]] + ggplot.them,
+    ncol = 4
+  )
+}
+```
+
+The reason is clear from the expression patterns across time: dividing samples based on median expression mainly resulted in two groups with low and high library size, which was not biologically meaningful for the TCGA normalization (figure \@ref(fig:GeneAndSurvivalExamples)). The RAB18 gene expression plays pivotal roles in cell proliferation and metastasis, and high expression is associated with poor survival in different cancer types [Keng Zhong et.al](https://bmccancer.biomedcentral.com/articles/10.1186/1471-2407-14-703). The FBXL14 gene expression mediates the epithelial-mesenchymal transition in cancer, which indicates that the FBXL14 could function as an EMT inhibitor to suppress metastasis in human cancers [Yizuo Song et.al](https://stemcellres.biomedcentral.com/articles/10.1186/s13287-019-1222-0).\
+There are many more of these examples in the TCGA READ RNA-Seq data.
+
+```{r GeneAndSurvivalExamples, warning=F, message=F, error=F,fig.dim=c(8,6),fig.cap='Gene expression patterns of the RAB18 and FBXL14 genes in the raw data and differently normalized  datasets of the TCGA READ RNA-Seq data.'}
+selected.genes <- c('RAB18', 'FBXL14')
+p <- lapply(selected.genes, function(i){
+  df <- data.frame(
+    Raw.counts = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'HTseq_counts'))[i, ],
+    FPKM = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'HTseq_FPKM'))[i , ],
+    FPKM.UQ = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'HTseq_FPKM.UQ'))[i , ],
+    RUV.III = unlist(SummarizedExperiment::assay(
+      read.cancer.se, 'RUV_III'))[i , ],
+    samples = c(1:166),
+    time = read.cancer.se$time.points
+  ) %>%
+  tidyr::pivot_longer(
+    -c(samples, time),
+    names_to = 'datasets',
+    values_to = 'expr') %>%
+    dplyr::mutate(datasets = replace(
+      datasets,
+      grep('RUV.III', datasets), 'RUV-III')) %>%
+    dplyr::mutate(datasets = replace(
+      datasets, grep(
+        'Raw.counts', datasets), 'Raw counts')) %>%
+    dplyr::mutate(datasets = factor(
+      datasets,
+      levels = c(
+        'Raw counts',
+        'FPKM',
+        'FPKM.UQ',
+        'RUV-III'))) %>%
+    data.frame(.)
+  p <- ggplot(df, aes(x = samples, y = expr, color = time)) +
+    geom_point(size = 2) +
+    scale_color_manual(values = major.times.colors) +
+    ylab(expression(Log[2] ~ 'gene expression'))  +
+    xlab('Samples') +
+    ggtitle(i) +
+    facet_wrap( ~ datasets, scale = 'free', ncol = 4) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1),
+      plot.title = element_text(size = 14),
+      axis.title.x = element_text(size = 12),
+      axis.title.y = element_text(size = 12),
+      axis.text.x = element_text(size = 12),
+      axis.text.y = element_text(size = 12),
+      legend.text = element_text(size = 10),
+      legend.title = element_text(size = 12),
+      strip.text.x = element_text(size = 12),
+      legend.position = 'none'
+    ) +
+    guides(color = guide_legend(title = "Time (years)"))
+  p
+})
+do.call(gridExtra::grid.arrange, p)
+```
+
+# Purity variation
+Note that here we have not attempted to remove variation caused by tumor purity in the data. Consequently, the tumor purity estimates obtained from the RUV-III and FPKM.UQ normalized data were highly correlated (figure \@ref(fig:PurityEstimate)). This illustrates the ability of RUV-III to only remove the variation the user wishes to remove and no more, i.e. to retain other variation that is of biological origin.
+```{r PurityEstimate, message=F, warning=F, fig.dim=c(7,3), fig.cap='Scatter plot (left-hand side) shows tumour purity scores obtained from the TCGA FPKM.UQ and RUV-III normalized data. Scatter plot (right-hand side) shows tumour purity scores obtained from the TCGA FPKM.UQ (using the ESTIMATE method) and RUV-III normalized data (using the singscore method). Note, no attempt was made to remove tumour purity variation from the data by RUV-III normalization'}
+read.geneAnnot <- SummarizedExperiment::rowData(read.cancer.se)
+purity.gene.sig <- read.geneAnnot$stromal == 'yes' |
+  read.geneAnnot$immnue == 'yes'
+purity.gene.sig <- row.names(read.cancer.se)[purity.gene.sig]
+row.names(ruviii.prps.norm) <- row.names(read.cancer.se)
+rankDatas.ruv <- singscore::rankGenes(ruviii.prps.norm)
+read.cancer.se$purity_RUV <- singscore::simpleScore(
+  rankData = rankDatas.ruv,
+  upSet = purity.gene.sig,
+  centerScore = F
+  )$TotalScore
+p1 <- ggplot(
+  data = as.data.frame(SummarizedExperiment::colData(read.cancer.se)),
+  aes(x = purity_HTseq_FPKM, y = 1-purity_RUV)) +
+  geom_point(size = 2) +
+  xlab('Tumour purity scores (FPKM.UQ)') +
+  ylab('Tumour purity scores (RUV-III)') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10)
+  )
+p2 <- ggplot(
+  data = as.data.frame(SummarizedExperiment::colData(read.cancer.se)),
+  aes(x = ESTIMATE_Aran, y = 1-purity_RUV)) +
+  geom_point(size = 2) +
+  xlab('Tumour purity (ESTIMATE)') +
+  ylab('Tumour purity scores (RUV-III)') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10)
+  )
+gridExtra::grid.arrange(
+  p1,
+  p2,
+  ncol = 2
+  )
+```
+

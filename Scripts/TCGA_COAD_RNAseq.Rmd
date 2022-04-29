@@ -1,0 +1,4964 @@
+---
+title: "TCGA_READ_ROLCRS"
+author:
+- name: Ramyar Molania
+  affiliation: Papenfuss Lab
+  url: https://www.wehi.edu.au/people/tony-papenfuss
+date: "15-02-2020"
+output:
+  rmdformats::readthedown:
+    fig_width: 12
+    fig_height: 5
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: no
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date() )
+editor_options:
+  chunk_output_type: console
+---
+`r params$update_date`
+
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r knitr_init, echo=FALSE, results="asis"}
+library(knitr)
+library(rmdformats)
+library(DT)
+library(BiocStyle)
+options(max.print = "75")
+opts_chunk$set(
+  echo = FALSE,
+  prompt = FALSE,
+  comment = FALSE,
+  message = FALSE,
+  warning = FALSE)
+opts_knit$set(width = 65)
+```
+
+# READ TCGA RNASeq data
+# Setup path
+
+```{r file-setUp, message=FALSE, include=FALSE, results=F}
+mainDir <- getwd()
+outPath <- "../output/"
+figPath <- "../figure/"
+dataPath <- "../data/"
+scriptPath <- "../script/"
+ifelse(
+  !dir.exists(file.path(mainDir, outPath)), 
+  dir.create(file.path(mainDir, outPath)),
+  FALSE
+  )
+ifelse(
+  !dir.exists(file.path(mainDir, figPath)), 
+  dir.create(file.path(mainDir, figPath)), 
+  FALSE
+  )
+ifelse(
+  !dir.exists(file.path(mainDir, dataPath)), 
+  dir.create(file.path(mainDir, dataPath)), 
+  FALSE
+  )
+ifelse(
+  !dir.exists(file.path(mainDir, scriptPath)), 
+  dir.create(file.path(mainDir, scriptPath)), 
+  FALSE
+  )
+options(max.print = 10000000)
+```
+
+
+```{r setUp-path-files}
+### Path to all datasets related to the TCGA READ data analysis
+# dir.create(paste0(
+#   dataPath,
+#   'TCGA_COAD_DataSets')
+#   )
+coad.data.path <- paste0(dataPath, 'TCGA_COAD_DataSets/')
+
+### Path to all figures related to the TCGA READ data analysis
+# dir.create(paste0(
+#   figPath,
+#   'TCGA_COAD_Figures')
+#   )
+coad.fig.path <- paste0(figPath, 'TCGA_COAD_Figures/')
+```
+
+# Data prepration
+## reading data
+
+```{r}
+coad.se <- readRDS(paste0(
+  '../data/TCGA_AllCancer_SummarizedExperiment/',
+  'TCGA_SummarizedExperiment_HTseq_COAD.rds')) #  56493 521 
+```
+
+## remvoing  genes
+### lowly expressed genes
+Tagging lowly expressed genes_considering normal and cancer samples
+
+```{r}
+coad.geneAnnot <- as.data.frame(SummarizedExperiment::rowData(coad.se))
+coad.geneAnnot$keep.union <- 'no'
+coad.geneAnnot$keep.union[
+  coad.geneAnnot$keep.cancer == 'yes' |
+    coad.geneAnnot$keep.normal == 'yes'] <- 'yes'
+coad.geneAnnot$keep.union[coad.geneAnnot$protein.coding == 'no'] <- 'no' # 16210
+all.equal(
+  row.names(coad.geneAnnot),
+  row.names(coad.se))
+```
+
+### genes have no Enterz idss
+
+```{r}
+### Enterz
+coad.geneAnnot$entrezgene.use <- 'yes'
+index <- is.na(coad.geneAnnot$entrezgene_id_BioMart) |
+  duplicated(coad.geneAnnot$entrezgene_id_BioMart)
+coad.geneAnnot$entrezgene.use[index] <- 'no'
+
+coad.geneAnnot$geneName.use <- 'yes'
+index <- is.na(coad.geneAnnot$gene_name.) | duplicated(coad.geneAnnot$gene_name.)
+coad.geneAnnot$geneName.use[index] <- 'no'
+
+keep.genes <- coad.geneAnnot$entrezgene.use == 'yes' |
+  coad.geneAnnot$geneName.use == 'yes'
+
+index <- coad.geneAnnot$entrezgene.use == 'yes' &
+  coad.geneAnnot$geneName.use == 'yes'
+coad.geneAnnot <- coad.geneAnnot[ index, ]
+```
+
+### keep genes that are used in CMS caller
+
+```{r}
+### Keeping genes for CMS clistering
+cms.geneSets <- CMScaller::geneSets.CMS
+cms.genes <- unname(unlist(cms.geneSets))
+length(cms.genes) #  1893
+length(unique(cms.genes)) # 1739
+
+length(intersect(
+  unique(cms.genes),
+  coad.geneAnnot$entrezgene_id_BioMart)
+  ) # 1728
+coad.geneAnnot$cms.genes <- 'no'
+index <- coad.geneAnnot$entrezgene_id_BioMart %in% unique(cms.genes)
+coad.geneAnnot$cms.genes[index] <- 'yes'
+
+index <- coad.geneAnnot$keep.union == 'yes' |
+  coad.geneAnnot$cms.genes == 'yes'
+coad.geneAnnot <- coad.geneAnnot[index, ]
+```
+
+## Saving the data
+
+```{r brca_se_saving}
+index <- match(
+  row.names(coad.geneAnnot), 
+  row.names(coad.se)
+  )
+coad.se <- coad.se[index , ]
+coad.sampleAnnot <- as.data.frame(SummarizedExperiment::colData(coad.se))
+all.equal(
+  colnames(coad.se),
+  coad.sampleAnnot$Sample
+  )
+all.equal(
+  row.names(coad.se),
+  row.names(coad.geneAnnot)
+  )
+rownames(coad.sampleAnnot) <- coad.sampleAnnot$Sample
+SummarizedExperiment::colData(coad.se) <- S4Vectors::DataFrame(coad.sampleAnnot)
+SummarizedExperiment::rowData(coad.se) <- coad.geneAnnot
+row.names(coad.se) <- coad.geneAnnot$gene_name.
+saveRDS(object = coad.se, file = paste0(
+  coad.data.path,
+  'TCGA_COAD_RNAseq_Harmonized_ForPaper.rds')
+  )
+```
+
+# Reading the cleaned data
+## summerized experiment object
+```{r}
+coad.se <- readRDS(file = paste0(
+  coad.data.path,
+  'TCGA_COAD_RNAseq_Harmonized_ForPaper.rds')
+  ) # 16151 521 
+tcga.harmonized <- names(SummarizedExperiment::assays(coad.se))
+```
+
+## removing plates with less than 3 samples
+
+```{r}
+# Removing plates with less than 3 samples
+removed.plates <- names(which(table(coad.se$plate_RNAseq) > 2))
+keep.plates <- coad.se$plate_RNAseq %in% removed.plates 
+coad.se <- coad.se[ , keep.plates] # 16151 518
+```
+
+## removing samples with low library size
+
+```{r }
+### Removing low quality samples
+coad.se$ls <- log2(
+  colSums(SummarizedExperiment::assay(
+    coad.se, 
+    'HTseq_counts'))
+  )
+
+## In 2010
+index <- coad.se$year_mda == '2010'
+bad.samples <- which(
+  coad.se$ls[index] < 23.4 | 
+    coad.se$ls[index] > 25 
+  )
+bad.samples.2010 <- coad.se$Sample[index][bad.samples] # 19
+
+## Other years
+index <- coad.se$year_mda != '2010'
+bad.samples <- which(coad.se$ls[index] < 24.4  )
+bad.samples.2011_14 <- coad.se$Sample[index][bad.samples] # 20
+
+all.bad.samples <- c(bad.samples.2010, bad.samples.2011_14)
+index <- !colnames(coad.se) %in% all.bad.samples
+coad.se <- coad.se[ , index] # 16151 479 
+```
+
+## data sets and sample annotation
+
+```{r }
+# data sets and sample annotation
+coad.sampleAnnot <- droplevels(as.data.frame(SummarizedExperiment::colData(coad.se)))
+coad.geneAnnot <- as.data.frame(SummarizedExperiment::rowData(coad.se))
+coad.rawCounts <- as.matrix(
+  SummarizedExperiment::assay(
+    coad.se, 
+    'HTseq_counts')
+  )
+coad.fpkm <- as.matrix(
+  SummarizedExperiment::assay(
+    coad.se, 
+    'HTseq_FPKM')
+  )
+coad.fpkm.UQ <- as.matrix(
+  SummarizedExperiment::assay(
+    coad.se, 
+    'HTseq_FPKM.UQ')
+  )
+all.equal(
+  row.names(coad.fpkm.UQ), 
+  coad.geneAnnot$gene_name.
+  )
+all.equal(
+  colnames(coad.fpkm.UQ), 
+  coad.sampleAnnot$Sample
+  )
+```
+
+## adding major time points
+
+```{r }
+### Adding two main time points
+coad.sampleAnnot$time.points <- '2010'
+index <- coad.sampleAnnot$year_mda != 2010
+coad.sampleAnnot$time.points[index] <- '2011:2014'
+coad.sampleAnnot$time.points <- factor(
+  coad.sampleAnnot$time.points ,
+  levels = c('2010', '2011:2014')
+  )
+```
+
+## microsatellite instability (MSI)
+
+```{r}
+### MSI
+colnames(coad.sampleAnnot)[1137] <- 'msi.status'
+index <- is.na(coad.sampleAnnot$msi.status)
+coad.sampleAnnot$msi.status[index] <- 'indeterminate'
+
+index <- coad.sampleAnnot$msi.status == 'mss'
+coad.sampleAnnot$msi.status[index] <- 'MSS'
+index <- coad.sampleAnnot$msi.status == 'msi-h'
+coad.sampleAnnot$msi.status[index] <- 'MSI-H'
+index <- coad.sampleAnnot$msi.status == 'msi-l'
+coad.sampleAnnot$msi.status[index] <- 'MSI-L'
+index <- coad.sampleAnnot$msi.status == 'indeterminate'
+coad.sampleAnnot$msi.status[index] <- 'Indeterminate'
+
+index <- grep('11', coad.sampleAnnot$tissue_RNAseq)
+coad.sampleAnnot$msi.status[index] <- 'Adjacent normal'
+
+coad.sampleAnnot$msi.status <- factor(
+  x = coad.sampleAnnot$msi.status, 
+  levels = c(
+    'MSS', 
+    'MSI-L', 
+    'MSI-H', 
+    'Indeterminate',
+    'Adjacent normal'
+    )
+  )
+dim(coad.geneAnnot)
+```
+
+## tumour stage
+
+```{r}
+coad.sampleAnnot$tumorStage <- coad.sampleAnnot$ajcc_pathologic_tumor_stage_liu
+index <- coad.sampleAnnot$tumorStage == '[Discrepancy]' |
+  coad.sampleAnnot$tumorStage == '[Not Available]' |
+  is.na(coad.sampleAnnot$tumorStage )
+coad.sampleAnnot$tumorStage[index] <- 'Not available'
+rm(index)
+
+index.normal <- coad.sampleAnnot$tissue == 'normal'
+index.cancer <- coad.sampleAnnot$tissue == 'cancer'
+coad.sampleAnnot$tumorStage[index.normal] <- 'Adjacent normal'
+sum(is.na(coad.sampleAnnot$tumorStage))
+coad.se.cancer <- coad.se[ , index.cancer]
+coad.sampleAnnot.cancer <- droplevels(coad.sampleAnnot[index.cancer , ])
+```
+
+# Molecular subtyping
+## msi 
+```{r}
+table(coad.sampleAnnot$msi.status)
+# MSS           MSI-L           MSI-H   Indeterminate Adjacent normal 
+# 271              81              82               5              40 
+```
+
+## consensus molecular subtype
+#### cancer samples
+
+```{r}
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_Harmonized_CmsClustering_HeatMap_CmsClustersOnCancerSamples.tiff'),
+#   width = 4800,
+#   height = 1400,
+#   res = 400
+#   )
+par(mfrow = c(1,3))
+set.seed(2010301149)
+cms.clusters.cancer.tcga <- lapply(
+  tcga.harmonized,
+  function(x){
+    ex.matrix <- as.matrix(SummarizedExperiment::assay(coad.se.cancer), x)
+    row.names(ex.matrix) <- SummarizedExperiment::rowData(coad.se.cancer)$entrezgene_id_BioMart
+    cms.cluster <- CMScaller::CMScaller(
+      emat = log2(ex.matrix + .5),
+      RNAseq = FALSE,
+      FDR = 0.05)
+    return(cms.cluster)
+    })
+# dev.off()
+names(cms.clusters.cancer.tcga) <- tcga.harmonized
+
+### GSEA
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_Harmonized_CmsClustering_GSEA_CmsClustersOnCancerSamples.tiff'),
+#   width = 4800,
+#   height = 1400,
+#   res = 400
+#   )
+par(mfrow = c(1,3))
+lapply(
+  tcga.harmonized,
+  function(x){
+    ex.matrix <- as.matrix(SummarizedExperiment::assay(coad.se.cancer, x))
+    row.names(ex.matrix) <- SummarizedExperiment::rowData(coad.se.cancer)$entrezgene_id_BioMart
+    cam <- CMScaller::CMSgsa(
+      emat = log2(ex.matrix + .5),
+      class = cms.clusters.cancer.tcga[[x]]$prediction,
+      RNAseq = FALSE)
+  })
+# dev.off()
+
+### Adding to sample annotations
+all.equal(
+  row.names(cms.clusters.cancer.tcga$HTseq_counts), 
+  coad.sampleAnnot.cancer$Sample
+  )
+
+col.names <- paste0(
+  'cms.cancer.',
+  c('rawCounts',
+    'fpkm',
+    'fpkmUq')
+  )
+for(i in 1:3){
+  coad.sampleAnnot[ , col.names[i]] <- 'Adjacent normal'
+  index <- match(
+    row.names(cms.clusters.cancer.tcga[[i]]),
+    coad.sampleAnnot$Sample
+  )
+  coad.sampleAnnot[ , col.names[i]][index] <-
+    as.character(cms.clusters.cancer.tcga[[i]]$prediction)
+
+  index <- is.na(coad.sampleAnnot[,col.names[i]])
+  coad.sampleAnnot[,col.names[i]][index] <- 'Not classified'
+  index <- grep('11', coad.sampleAnnot$tissue_expr.data)
+  coad.sampleAnnot[ , col.names[i] ] <- factor(
+    x = coad.sampleAnnot[ , col.names[i] ],
+    levels = c('CMS1',
+               'CMS2',
+               'CMS3',
+               'CMS4',
+               'Adjacent normal',
+               'Not classified'))
+}
+table(coad.sampleAnnot$cms.cancer.fpkm)
+# CMS1            CMS2            CMS3            CMS4 Adjacent normal  Not classified 
+# 65             111              52             117              40              94 
+```
+
+####  cancer samples within each time points
+
+```{r}
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_Harmonized_CmsClustering_HeatMap_CmsClustersOnCancerSamplesWithInTimes.tiff'),
+#   width = 4800,
+#   height = 2800,
+#   res = 400
+#   )
+set.seed(2010301149)
+par(mfrow = c(2,3))
+cms.clusters.time.points.cancer.tcga <- lapply(
+  levels(coad.sampleAnnot.cancer$time.points),
+  function(x){
+    index.time <- coad.sampleAnnot.cancer$time.points == x
+    cms.clusters.cancer.time.tcga <- lapply(
+      tcga.harmonized,
+      function(y){
+        ex.matrix <- as.matrix(SummarizedExperiment::assay(coad.se.cancer[, index.time], y))
+        row.names(ex.matrix) <- SummarizedExperiment::rowData(coad.se.cancer)$entrezgene_id_BioMart
+        cms.cluster <- CMScaller::CMScaller(
+          emat = log2(ex.matrix + .5),
+          RNAseq = FALSE,
+          FDR = 0.05)
+        return(cms.cluster)
+    })
+    names(cms.clusters.cancer.time.tcga) <- tcga.harmonized
+    return(cms.clusters.cancer.time.tcga)
+})
+# dev.off()
+names(cms.clusters.time.points.cancer.tcga) <- paste0(
+  'CMS',
+  '_',
+  levels(coad.sampleAnnot.cancer$time.points)
+  )
+
+### GSEA
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_Harmonized_CmsClustering_GSEA_CmsClustersOnCancerSamplesWithInTimes.tiff'),
+#   width = 4800,
+#   height = 2800,
+#   res = 400
+#   )
+par(mfrow = c(2,3))
+lapply(
+  levels(coad.sampleAnnot.cancer$time.points),
+  function(x){
+    index.time <- coad.sampleAnnot.cancer$time.points == x
+    lapply(
+      tcga.harmonized,
+      function(y){
+        ex.matrix <- as.matrix(SummarizedExperiment::assay(coad.se.cancer[ , index.time], y))
+        row.names(ex.matrix) <- SummarizedExperiment::rowData(coad.se.cancer)$entrezgene_id_BioMart
+        cam <- CMScaller::CMSgsa(
+          emat = log2(ex.matrix + .5),
+          class = cms.clusters.time.points.cancer.tcga[[x]][[y]]$prediction,
+          RNAseq = FALSE)
+      })
+  })
+# dev.off()
+
+raw.counts <- as.data.frame(rbind(
+  cms.clusters.time.points.cancer.tcga$CMS_2010[[1]],
+  cms.clusters.time.points.cancer.tcga$`CMS_2011:2014`[[1]])
+  )
+fpkm <- as.data.frame(rbind(
+  cms.clusters.time.points.cancer.tcga$CMS_2010[[2]],
+  cms.clusters.time.points.cancer.tcga$`CMS_2011:2014`[[2]])
+  )
+fpkm.uq <- as.data.frame(rbind(
+  cms.clusters.time.points.cancer.tcga$CMS_2010[[3]],
+  cms.clusters.time.points.cancer.tcga$`CMS_2011:2014`[[3]])
+  )
+cms.clusters.time.points.cancer.tcga <- list(
+  raw.counts = raw.counts,
+  fpkm = fpkm,
+  fpkm.uq = fpkm.uq
+  )
+
+col.names <- paste0(
+  'cms.cancer.time.points.',
+  c('rawCounts',
+    'fpkm',
+    'fpkmUq')
+  )
+for(i in 1:3){
+  coad.sampleAnnot[ , col.names[i]] <- 'Adjacent normal'
+  index <- match(
+    row.names(cms.clusters.time.points.cancer.tcga[[i]]),
+    coad.sampleAnnot$Sample
+  )
+  coad.sampleAnnot[ , col.names[i]][index] <-
+    as.character(cms.clusters.time.points.cancer.tcga[[i]]$prediction)
+  index <- is.na(coad.sampleAnnot[,col.names[i]])
+  coad.sampleAnnot[,col.names[i]][index] <- 'Not classified'
+  index <- grep('11', coad.sampleAnnot$tissue_expr.data)
+  coad.sampleAnnot[ , col.names[i] ] <- factor(
+    x = coad.sampleAnnot[ , col.names[i] ],
+    levels = c('CMS1',
+               'CMS2',
+               'CMS3',
+               'CMS4',
+               'Adjacent normal',
+               'Not classified'))
+  }
+```
+
+# Saving the data
+
+```{r}
+# all.equal(colnames(coad.se), coad.sampleAnnot$Sample)
+# all.data <- list(
+#   coad.se = coad.se,
+#   coad.sampleAnnot = coad.sampleAnnot
+# )
+# saveRDS(
+#   object = all.data,
+#   file = paste0(coad.data.path, 'TCGA_COAD_RNAseq_SumExper_SampleAnnot.rds')
+#   )
+all.data <- readRDS(
+  file = paste0(
+    coad.data.path,
+    'TCGA_COAD_RNAseq_SumExper_SampleAnnot.rds')
+  )
+coad.se <- all.data$coad.se
+coad.sampleAnnot <- all.data$coad.sampleAnnot
+index.cancer <- coad.sampleAnnot$tissue == 'cancer'
+index.normal <- coad.sampleAnnot$tissue == 'normal'
+coad.se.cancer <- coad.se[ , index.cancer]
+coad.sampleAnnot.cancer <- coad.sampleAnnot[index.cancer , ] # 439 3585
+tcga.harmonized <- names(SummarizedExperiment::assays(coad.se.cancer))
+coad.rawCounts.cancer <- as.matrix(SummarizedExperiment::assay(
+  coad.se.cancer, 
+  'HTseq_counts')
+  )
+coad.fpkm.cancer <- as.matrix(SummarizedExperiment::assay(
+  coad.se.cancer, 
+  'HTseq_FPKM')
+  )
+coad.fpkmUq.cancer <- as.matrix(SummarizedExperiment::assay(
+  coad.se.cancer, 
+  'HTseq_FPKM.UQ')
+  )
+
+all.equal(
+  colnames(coad.se.cancer), 
+  coad.sampleAnnot.cancer$Sample
+  )
+```
+
+# Study design
+
+```{r}
+## Heatmap of all
+cols <- c(
+  'year_mda',
+  'plate_RNAseq',
+  'tss_RNAseq',
+  'ls',
+  'purity_HTseq_FPKM',
+  'tissue',
+  'msi.status',
+  'cms.cancer.fpkmUq',
+  'cms.cancer.time.points.fpkmUq'
+  )
+sample.info <- coad.sampleAnnot[ , cols]
+sample.info$plate_RNAseq <- factor(
+  sample.info$plate_RNAseq,
+  levels = unique(sample.info$plate_RNAseq)
+  )
+sample.info$tss_RNAseq <- factor(
+  sample.info$tss_RNAseq,
+  levels = unique(sample.info$tss_RNAseq)
+  )
+
+### Years
+H.time <- ComplexHeatmap::Heatmap(
+  rev(sample.info$year_mda),
+  cluster_columns  = F,
+  col =  years.colors,
+  name = 'Time (years)',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    ncol = 2,
+    title_gp = grid::gpar(fontsize = 14)
+    )
+  )
+
+### plates
+length(unique(sample.info$plate_RNAseq)) # 24
+colfunc <- grDevices::colorRampPalette(RColorBrewer::brewer.pal(11, 'PRGn')[-6])
+color.plates <- colfunc(24)
+color.plates <- color.plates[as.integer(sample.info$plate_RNAseq)]
+names(color.plates) <- sample.info$plate_RNAseq
+H.plate <- ComplexHeatmap::Heatmap(
+  rev(sample.info$plate_RNAseq),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  col = color.plates,
+  name = 'Plates',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    ncol = 4,
+    title_gp = grid::gpar(fontsize = 14)))
+### TSS
+colfunc <- grDevices::colorRampPalette(RColorBrewer::brewer.pal(11, 'BrBG')[-6])
+color.tss <- colfunc(25)
+length(unique(sample.info$tss_RNAseq)) # 25
+color.tss <- color.tss[as.integer(sample.info$tss_RNAseq)]
+names(color.tss) <- sample.info$tss_RNAseq
+H.tss <- ComplexHeatmap::Heatmap(
+  rev(sample.info$tss_RNAseq),
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  col = color.tss,
+  name = 'Tissue source sites',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    ncol = 4,
+    title_gp = grid::gpar(fontsize = 14)))
+### Tissue
+H.tissue <- ComplexHeatmap::Heatmap(
+  rev(sample.info$tissue),
+  cluster_rows = FALSE,
+  col = RColorBrewer::brewer.pal(9, 'Greys')[c(8,3)],
+  name = 'Tissues',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    direction = "vertical",
+    ncol = 1,
+    title_gp = grid::gpar(fontsize = 14),
+    labels = c(
+      'Primary tumor', 
+      'Normal tissue')))
+### CMS
+H.cms <- ComplexHeatmap::Heatmap(
+  rev(sample.info$cms.cancer.fpkmUq),
+  cluster_rows = FALSE,
+  col = cms.colors,
+  name = 'CMS',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    direction = "vertical",
+    ncol = 1,
+    title_gp = gpar(fontsize = 14)))
+### CMS per time
+H.cms.time <- ComplexHeatmap::Heatmap(
+  rev(sample.info$cms.cancer.time.points.fpkmUq),
+  cluster_rows = FALSE,
+  col = cms.colors,
+  name = 'CMS within time points',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    direction = "vertical",
+    ncol = 1,
+    title_gp = gpar(fontsize = 14) ))
+### MSI
+H.msi <- ComplexHeatmap::Heatmap(
+  rev(sample.info$msi.status),
+  cluster_rows = FALSE,
+  col = msi.colors,
+  name = 'MSI',
+  heatmap_legend_param = list(
+    color_bar = "discrete" ,
+    direction = "vertical",
+    ncol = 1,
+    title_gp = gpar(fontsize = 14)))
+### purity
+H.purity <- ComplexHeatmap::Heatmap(
+  rev(sample.info$purity_HTseq_FPKM),
+  cluster_rows = FALSE,
+  name = 'Tumor purity scores',
+  col = viridis::plasma(n = 10),
+  heatmap_legend_param = list(
+    title_gp = gpar(fontsize = 14)))
+### Library size
+H.ls <- ComplexHeatmap::Heatmap(
+  rev(sample.info$ls),
+  cluster_rows = FALSE,
+  name = 'Library size',
+  col = viridis::viridis(n = 10),
+   heatmap_legend_param = list(
+    title_gp = gpar(fontsize = 14)))
+# tiff(paste(
+#   coad.fig.path ,
+#   'TCGA_COAD_StudyDesign_HeatMapOfAll.tiff'),
+#   width = 3000,
+#   height = 3800,
+#   res = 400
+#   )
+draw(
+  H.time +
+    H.plate +
+    H.tss +
+    H.tissue +
+    H.msi +
+    H.cms +
+    H.cms.time +
+    H.purity +
+    H.ls,
+  merge_legends = FALSE,
+  heatmap_legend_side = 'right'
+  )
+# dev.off()
+```
+
+# TCGA statistical summaries
+## PCA
+### across all data - cancer samples
+
+```{r}
+## Cancer samples
+pca.cancer.tcga  <- lapply(
+  tcga.harmonized,
+  function(x){
+    .pca(
+      data = as.matrix(SummarizedExperiment::assay(coad.se.cancer, x)),
+      is.log = FALSE)
+    })
+names(pca.cancer.tcga) <- tcga.harmonized
+```
+
+### within major times - cancer samples
+
+```{r }
+### Within each time main point - cancers
+pca.main.time.cancer.tcga <- lapply(
+  levels(coad.sampleAnnot.cancer$time.points),
+  function(x){
+    index <- coad.sampleAnnot.cancer$time.points == x
+    pca.times  <- lapply(
+      tcga.harmonized,
+      function(y){
+        pcs <- .pca(
+          data = as.matrix(SummarizedExperiment::assay(coad.se.cancer[ , index], y)), 
+          is.log = FALSE)
+    })
+    names(pca.times) <- tcga.harmonized
+    return(pca.times)
+  })
+names(pca.main.time.cancer.tcga) <- paste0(
+  'Time_',
+  levels(coad.sampleAnnot.cancer$time.points)
+  )
+```
+
+## RLE
+### across all data - cancer samples
+
+```{r}
+### Cancer samples
+rle.cancer.tcga <- lapply(
+  tcga.harmonized,
+  function(x){
+    .rle.comp(
+      expr.data = as.matrix(SummarizedExperiment::assay(coad.se.cancer, x)),
+      is.log = FALSE
+      )
+    })
+names(rle.cancer.tcga) <- tcga.harmonized
+```
+
+## Correlations
+### genes and library size
+#### across all data - cancer samples
+
+```{r}
+### Cancer samples
+corr.geneLs.cancer.tcga <- lapply(
+  tcga.harmonized,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(coad.se.cancer, x)),
+      is.log = FALSE,
+      variable = coad.sampleAnnot.cancer$ls,
+      method = 'spearman',
+      n.cores = 11,
+      group = 'ls'
+      )
+    })
+names(corr.geneLs.cancer.tcga) <- tcga.harmonized
+```
+
+### genes and purity
+#### across all data - cancer samples
+
+```{r}
+### Cancer samples
+corr.genePurity.cancer.tcga  <- lapply(
+  tcga.harmonized,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(coad.se.cancer, x)),
+      is.log = FALSE,
+      variable  = coad.sampleAnnot.cancer$purity_HTseq_FPKM,
+      method = 'spearman',
+      n.cores = 11,
+      group = 'purity'
+      )
+    })
+names(corr.genePurity.cancer.tcga) <- tcga.harmonized
+```
+
+### genes and median of RLE
+#### across all data - cancer samples
+
+```{r}
+### Cancer samples
+corr.geneMedRLe.cancer.tcga <- lapply(
+  tcga.harmonized,
+  function(x){
+    .corr.gene.variable(
+      expr.data = as.matrix(SummarizedExperiment::assay(coad.se.cancer, x)),
+      is.log = FALSE,
+      variable = rle.cancer.tcga[[x]]$rle.med,
+      method = 'spearman',
+      n.cores = 11,
+      group = 'RleMed'
+      )
+    })
+names(corr.geneMedRLe.cancer.tcga) <- tcga.harmonized
+```
+
+## ANOVA
+### genes and years
+#### across all data - cancer samples
+
+```{r}
+ftest.time.cancer.tcga <- lapply(
+  tcga.harmonized,
+  function(x){
+    .Ftest(
+      data = as.matrix(SummarizedExperiment::assay(coad.se.cancer, x)),
+      variable = coad.sampleAnnot.cancer$year_mda,
+      is.log = FALSE,
+      n.cores = 11
+      )
+  })
+names(ftest.time.cancer.tcga) <- tcga.harmonized
+```
+
+### genes and main time points
+#### across all data - cancer samples
+
+```{r}
+ftest.main.time.cancer.tcga <- lapply(
+  tcga.harmonized,
+  function(x){
+    .Ftest(
+      data = as.matrix(SummarizedExperiment::assay(coad.se.cancer, x)),
+      var = coad.sampleAnnot.cancer$time.points,
+      is.log = FALSE,
+      n.cores = 11
+      )
+  })
+names(ftest.main.time.cancer.tcga) <- tcga.harmonized
+```
+
+### genes and plates
+#### within major times - cancer samples
+
+```{r}
+times <- levels(coad.sampleAnnot.cancer$time.points)
+ftest.plates.time.points.tcga <- lapply(
+  c(1:2), 
+  function(x){
+    index.time <- coad.sampleAnnot.cancer$time.points == times[x]
+    ftest.plates.time <- lapply(
+      tcga.harmonized, 
+      function(x){
+        ftest.plates <-
+          .Ftest(
+            data = as.matrix(SummarizedExperiment::assay(coad.se.cancer[, index.time], x)),
+            var = coad.sampleAnnot.cancer$plate_RNAseq[index.time],
+            is.log = FALSE,
+            n.cores = 11
+          )
+      })
+    names(ftest.plates.time) <- tcga.harmonized
+    ftest.plates.time
+  })
+names(ftest.plates.time.points.tcga) <- times
+```
+
+## Canonical correlation analysis
+### between pcs and years
+#### across all data - cancer samples
+
+```{r}
+### Cancer samples
+years.dummies.cancer <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$year_mda)
+years.dummies.cancer <- years.dummies.cancer[, c(2:ncol(years.dummies.cancer))]
+
+nPCs <- 10
+cca.time.cancer.tcga <- lapply(
+  tcga.harmonized, 
+  function(x){
+    pcs <- pca.cancer.tcga[[x]]$sing.val$u
+  sapply(
+    1:nPCs,
+    function(y){
+      cca.time <- stats::cancor(
+        x = pcs[, 1:y, drop = FALSE],
+        y = years.dummies.cancer)
+      1 - prod(1 - cca.time$cor^2)
+    })
+  })
+names(cca.time.cancer.tcga) <- tcga.harmonized
+```
+
+### between pcs and main times
+
+```{r}
+main.times.dummies.cancer <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$time.points)
+main.times.dummies.cancer <- main.times.dummies.cancer[, c(2:ncol(main.times.dummies.cancer))]
+
+nPCs <- 10
+cca.main.time.cancer.tcga <- lapply(
+  tcga.harmonized, 
+  function(x){
+    pcs <- pca.cancer.tcga[[x]]$sing.val$u
+  sapply(
+    1:nPCs,
+    function(y){
+      cca.time <- stats::cancor(
+        x = pcs[, 1:y, drop = FALSE],
+        y = main.times.dummies.cancer)
+      1 - prod(1 - cca.time$cor^2)
+    })
+  })
+names(cca.main.time.cancer.tcga) <- tcga.harmonized
+```
+
+### between pcs and cms
+
+```{r}
+cms.calls.cancer.tcga <- coad.sampleAnnot.cancer[, c(
+  'cms.cancer.rawCounts', 
+  'cms.cancer.fpkm', 
+  'cms.cancer.fpkmUq')]
+nPCs <- 10
+cca.cms.cancer.tcga <- lapply(
+  c(1:3), 
+  function(x){
+    cms.dummies <- fastDummies::dummy_cols(cms.calls.cancer.tcga[,x])
+    cms.dummies <- cms.dummies[, c(2:ncol(cms.dummies))]
+    cms.caa.allPcs <- sapply(
+      1:nPCs,
+      function(y) {
+        cms.caa <- stats::cancor(
+          x = pca.cancer.tcga[[x]]$sing.val$u[, 1:y, drop = FALSE],
+          y = cms.dummies)
+        1 - prod(1 - cms.caa$cor^2)
+    })
+  })
+names(cca.cms.cancer.tcga) <- tcga.harmonized
+```
+
+### between pcs and msi
+
+```{r}
+### Cancers
+nPCs <- 10
+cca.msi.cancer.tcga <- lapply(
+  tcga.harmonized, 
+  function(x){
+    msi.dummies <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$msi.status)
+    msi.dummies <- msi.dummies[, c(2:ncol(msi.dummies))]
+    msi.caa.allPcs <- sapply(
+      1:nPCs,
+      function(y) {
+        msi.caa <- stats::cancor(
+          x = pca.cancer.tcga[[x]]$sing.val$u[, 1:y, drop = FALSE],
+          y = msi.dummies)
+        1 - prod(1 - msi.caa$cor^2)
+    })
+  })
+names(cca.msi.cancer.tcga) <- tcga.harmonized
+```
+
+### between pcs and plates
+#### within major times - cancer samples
+
+```{r}
+times <- levels(coad.sampleAnnot.cancer$time.points)
+nPCs <- 10
+cca.plates.time.points.cancer.tcga <- lapply(
+  c(1:2), 
+  function(x){
+    pca.times <- pca.main.time.cancer.tcga[[x]]
+    index.time <- coad.sampleAnnot.cancer$time.points == times[x]
+    plates.ids.cancer.dummies <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$plate_RNAseq[index.time])
+    plates.ids.cancer.dummies <- plates.ids.cancer.dummies[, c(2:ncol(plates.ids.cancer.dummies))]
+    cca.plates.cancer.tcga <- lapply(
+      tcga.harmonized, 
+      function(y){
+        pcs <- pca.times[[y]]$sing.val$u
+        sapply(
+          1:nPCs,
+          function(z) {
+            cca.time <- stats::cancor(
+              x = pcs[, 1:z, drop = FALSE],
+              y = plates.ids.cancer.dummies)
+            1 - prod(1 - cca.time$cor ^ 2)
+          })
+        })
+    names(cca.plates.cancer.tcga) <- tcga.harmonized
+    cca.plates.cancer.tcga
+    })
+
+names(cca.plates.time.points.cancer.tcga) <- times
+```
+
+## Linear regression  analysis
+### between pcs and librray size
+#### across all data - cancer samples
+
+```{r}
+### Cancer samples
+nPCs <- 10
+lreg.ls.cancer.tcga <- lapply(
+  tcga.harmonized, 
+  function(x){
+    pcs <- pca.cancer.tcga[[x]]$sing.val$u
+    tcga.ls.rSquared <- sapply(
+      1:nPCs,
+      function(y) {
+        lm.ls <- summary(lm(coad.sampleAnnot.cancer$ls ~ pcs[, 1:y]))$r.squared
+    })
+  })
+names(lreg.ls.cancer.tcga) <- tcga.harmonized
+```
+
+### between pcs and purity
+#### across all data - cancer samples
+
+```{r}
+
+```
+
+## Silhouette coefficient analysis
+### pcs and years
+####  across all data - cancer samples
+```{r}
+silCoef.main.time.cancer.tcga <-  sapply(
+  tcga.harmonized, 
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.cancer.tcga[[x]]$sing.val$u, 
+      variable  = coad.sampleAnnot.cancer$time.points, 
+      nPCs = 3
+      )
+    })
+```
+
+### pcs and cms
+####  across all data - cancer samples
+
+```{r}
+cms.calls.cancer.tcga <- c(
+  'cms.cancer.rawCounts', 
+  'cms.cancer.fpkm', 
+  'cms.cancer.fpkmUq'
+  )
+silCoef.cms.cancer.tcga <- sapply(
+  c(1:3),
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.cancer.tcga[[x]]$sing.val$u,
+      variable  = coad.sampleAnnot.cancer[, cms.calls.cancer.tcga[x]],
+      nPCs = 3
+      )
+    })
+```
+
+### pcs and msi
+####  across all data - cancer samples
+
+```{r}
+coad.sampleAnnot.cancer <- droplevels(coad.sampleAnnot.cancer)
+### Cancers
+silCoef.msi.cancer.tcga <-  sapply(
+  tcga.harmonized, 
+  function(x){
+    .silhouette.coeff(
+      pcs = pca.cancer.tcga[[x]]$sing.val$u, 
+      variable  = coad.sampleAnnot.cancer$msi.status, 
+      nPCs = 3
+      )
+    })
+```
+
+
+## ARI
+### pcs and cms
+
+```{r}
+library(mclust)
+cms.calls.cancer.tcga <- c(
+  'cms.cancer.rawCounts', 
+  'cms.cancer.fpkm', 
+  'cms.cancer.fpkmUq'
+  )
+nPCs <- 3
+set.seed(2011110837)
+ari.cms.cancer.tcga <- sapply(
+  c(1:3),
+  function(x){
+    pcs <- pca.cancer.tcga[[x]]$sing.val$u[,1:nPCs]
+    BIC <- mclust::mclustBIC(data = pcs)
+    mod <- mclust::Mclust(data = pcs, x = BIC, G = 4)
+    mclust::adjustedRandIndex(
+      mod$classification, 
+      coad.sampleAnnot.cancer[, cms.calls.cancer.tcga[x]]
+      )
+    })
+names(ari.cms.cancer.tcga) <- tcga.harmonized
+```
+
+### pcs and major time points
+
+```{r}
+library(mclust)
+nPCs <- 3
+set.seed(2011110837)
+ari.main.times.cancer.tcga <- sapply(
+  c(1:3),
+  function(x){
+    pcs <- pca.cancer.tcga[[x]]$sing.val$u[,1:nPCs]
+    BIC <- mclust::mclustBIC(data = pcs)
+    mod <- mclust::Mclust(data = pcs, x = BIC, G = 2)
+    mclust::adjustedRandIndex(
+      mod$classification, 
+      coad.sampleAnnot.cancer$time.points
+      )
+    })
+names(ari.main.times.cancer.tcga) <- tcga.harmonized
+```
+
+### pcs and msi
+
+```{r}
+library(mclust)
+nPCs <- 3
+set.seed(2011110837)
+ari.msi.cancer.tcga <- sapply(
+  c(1:3),
+  function(x){
+    pcs <- pca.cancer.tcga[[x]]$sing.val$u[,1:nPCs]
+    BIC <- mclust::mclustBIC(data = pcs)
+    mod <- mclust::Mclust(data = pcs, x = BIC, G = 3)
+    mclust::adjustedRandIndex(
+      mod$classification, 
+      coad.sampleAnnot.cancer$msi.status
+      )
+    })
+names(ari.msi.cancer.tcga) <- tcga.harmonized
+```
+
+# All TCGA statistical summaries
+
+```{r}
+coad.tcga.stat.summaries <- list(
+  pca.cancer.tcga = pca.cancer.tcga,
+  pca.main.time.cancer.tcga = pca.main.time.cancer.tcga,
+  rle.cancer.tcga = rle.cancer.tcga,
+  corr.geneLs.cancer.tcga = corr.geneLs.cancer.tcga,
+  corr.genePurity.cancer.tcga = corr.genePurity.cancer.tcga,
+  corr.geneMedRLe.cancer.tcga = corr.geneMedRLe.cancer.tcga,
+  ftest.main.time.cancer.tcga = ftest.main.time.cancer.tcga,
+  ftest.plates.time.points.tcga = ftest.plates.time.points.tcga,
+  ftest.time.cancer.tcga = ftest.time.cancer.tcga,
+  cca.cms.cancer.tcga = cca.cms.cancer.tcga,
+  cca.main.time.cancer.tcga = cca.main.time.cancer.tcga,
+  cca.msi.cancer.tcga = cca.msi.cancer.tcga,
+  cca.plates.time.points.cancer.tcga = cca.plates.time.points.cancer.tcga,
+  cca.time.cancer.tcga = cca.time.cancer.tcga,
+  lreg.ls.cancer.tcga = lreg.ls.cancer.tcga,
+  silCoef.main.time.cancer.tcga = silCoef.main.time.cancer.tcga,
+  silCoef.cms.cancer.tcga = silCoef.cms.cancer.tcga,
+  silCoef.msi.cancer.tcga = silCoef.msi.cancer.tcga
+)
+
+# saveRDS(
+#   object = coad.tcga.stat.summaries,
+#   file = paste0(coad.data.path, 'TCGA_COAD_RNAseq_allStatisticalSummaries.rds')
+#   )
+coad.tcga.stat.summaries <- readRDS(
+  file = paste0(
+    coad.data.path, 
+    'TCGA_COAD_RNAseq_allStatisticalSummaries.rds')
+  )
+ari.cms.cancer.tcga
+coad.tcga.stat.summaries[['ari.cms.cancer.tcga']] <- ari.cms.cancer.tcga
+coad.tcga.stat.summaries[['ari.main.times.cancer.tcga']] <- ari.main.times.cancer.tcga
+coad.tcga.stat.summaries[['ari.msi.cancer.tcga']] <- ari.msi.cancer.tcga
+coad.tcga.stat.summaries[['silCoef.msi.cancer.tcga']] <- silCoef.msi.cancer.tcga
+```
+
+# TCGA microarray
+
+```{r}
+coad.micro.array <- read.delim(
+  paste0(
+  coad.data.path,
+  'COAD.transcriptome__agilentg4502a_07_3__unc_edu__Level_3__unc_lowess_normalization_gene_level__data.data.txt'),
+  row.names = 1,
+  stringsAsFactors = FALSE
+  )
+dim(coad.micro.array) # 17815   172
+coad.micro.array <- coad.micro.array[-1 , ]
+row.lables <- row.names(coad.micro.array)
+coad.micro.array <- apply(
+  coad.micro.array,
+  2,
+  function(x) round(as.numeric(x), 3)
+  )
+row.names(coad.micro.array) <- row.lables
+sum(is.na(coad.micro.array)) # 445
+coad.micro.array <- coad.micro.array[complete.cases(coad.micro.array) , ]
+colnames(coad.micro.array) <- gsub('\\.', '-', colnames(coad.micro.array))
+
+# ### Sample annotation
+coad.micro.array.sampleAnnot <- coad.sampleAnnot.cancer
+common.samples <- intersect(
+  coad.micro.array.sampleAnnot$Sample,
+  colnames(coad.micro.array)
+  ) # 67
+length(common.samples) # 129
+coad.micro.array.sampleAnnot <- coad.micro.array.sampleAnnot[ common.samples , ]
+coad.micro.array <- coad.micro.array[ , common.samples]
+all.equal(
+  colnames(coad.micro.array), 
+  coad.micro.array.sampleAnnot$Sample
+  )
+
+### gene annot
+coad.geneAnnot <- as.data.frame(SummarizedExperiment::rowData(coad.se.cancer))
+common.genes <- intersect(row.names(coad.micro.array), coad.geneAnnot$gene_name.)
+coad.micro.geneAnnot <- coad.geneAnnot[common.genes , ]
+coad.micro.array <- coad.micro.array[ common.genes, ]
+```
+
+# RUV-III normalization
+
+```{r}
+ruvIII.norm <- readRDS(
+  file = paste0(
+    coad.data.path, 
+    'TCGA_COAD_AllRuvs_FprPaper.rds')
+  )
+coad.ruv <- t(ruvIII.norm$ruviii.spb$newY[1:439, ])
+all.equal(
+  colnames(coad.ruv), 
+  coad.sampleAnnot.cancer$Sample
+  )
+```
+
+## consensus molecular subtype
+#### cancer samples
+
+```{r}
+### Cancer samples
+coad.geneAnnot <- SummarizedExperiment::rowData(coad.se.cancer)
+row.names(coad.ruv) <- coad.geneAnnot$entrezgene_id_BioMart
+# set.seed(23324554)
+set.seed(2010221017)
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_RUVAdjusted_HeatMap_CmsClustersOnCancerSamples.tiff'),
+#   width = 1600,
+#   height = 1400,
+#   res = 400
+#   )
+par(mfrow = c(1,1))
+cmsCluster.ruv <- CMScaller::CMScaller(
+  emat =  coad.ruv,
+  RNAseq = FALSE,
+  FDR = 0.05
+  )
+# dev.off()
+
+### GSEA samples
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_RUVAdjusted_GSEA_CmsClustersOnCancerSamples.tiff'),
+#   width = 1800,
+#   height = 1800,
+#   res = 400
+#   )
+par(mfrow = c(1,1))
+cam <- CMScaller::CMSgsa(
+  emat = coad.ruv,
+  class = cmsCluster.ruv$prediction,
+  RNAseq = FALSE
+)
+# dev.off()
+
+coad.sampleAnnot$cms.cancer.ruv <- 'Adjacent normal'
+index <- match(
+  row.names(cmsCluster.ruv),
+  coad.sampleAnnot$Sample
+  )
+
+coad.sampleAnnot$cms.cancer.ruv[index] <- as.character(cmsCluster.ruv$prediction)
+index <- is.na(coad.sampleAnnot$cms.cancer.ruv)
+coad.sampleAnnot$cms.cancer.ruv[index] <- 'Not classified'
+coad.sampleAnnot$cms.cancer.ruv <- factor(
+  x = coad.sampleAnnot$cms.cancer.ruv,
+  levels = c(
+    'CMS1',
+    'CMS2',
+    'CMS3',
+    'CMS4',
+    'Adjacent normal',
+    'Not classified'
+  ))
+coad.sampleAnnot.cancer <- coad.sampleAnnot[index.cancer , ]
+```
+
+## RUV statistical summaries
+### PCA
+#### across all data - cancer samples
+
+```{r}
+pca.cancer.ruv <- .pca(
+  data = coad.ruv,
+  is.log = TRUE
+  )
+```
+
+#### within major times - cancer samples
+
+```{r}
+times <- levels(coad.sampleAnnot.cancer$time.points)
+pca.cancer.main.times.ruv <- lapply(
+  times, 
+  function(x){
+    index.time <- coad.sampleAnnot.cancer$time.points == x
+    pca.time <- .pca(
+      data = coad.ruv[ , index.time], 
+      is.log = TRUE
+      )
+    pca.time
+  })
+names(pca.cancer.main.times.ruv) <- times
+```
+
+### RLE
+#### across all data - cancer samples
+
+```{r}
+rle.cancer.ruv <- .rle.comp(
+  expr.data = coad.ruv, 
+  is.log = TRUE
+  )
+```
+
+### Correlations
+#### genes and library size
+##### across all data - cancer samples
+
+```{r}
+corr.geneLs.cancer.ruv <- .corr.gene.variable(
+  expr.data = coad.ruv,
+  is.log = TRUE,
+  variable = coad.sampleAnnot.cancer$ls,
+  method = 'spearman',
+  n.cores = 11,
+  group = 'ls'
+  )
+```
+
+#### genes and purity
+##### across all data - cancer samples
+
+```{r}
+### Cancer samples
+corr.genePurity.cancer.ruv <- .corr.gene.variable(
+  expr.data = coad.ruv,
+  is.log = TRUE,
+  variable = coad.sampleAnnot.cancer$purity_HTseq_FPKM.UQ,
+  method = 'spearman',
+  n.cores = 11,
+  group = 'purity'
+  )
+```
+
+#### genes and medians of RLE
+##### across all data - cancer samples
+
+```{r}
+corr.geneMedRle.cancer.ruv <- .corr.gene.variable(
+  expr.data = coad.ruv,
+  is.log = TRUE,
+  variable = rle.cancer.ruv$rle.med,
+  method = 'spearman',
+  n.cores = 11,
+  group = 'MedRle'
+  )
+```
+
+### Canonical correlation analysis
+#### pcs and cms
+##### across all data - cancer samples
+
+```{r}
+cms.dummies.CancerSample <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$cms.cancer.ruv)
+cms.dummies.CancerSample <- cms.dummies.CancerSample[, c(2:ncol(cms.dummies.CancerSample))]
+nPCs <- 10
+cca.cms.cancer.ruv <- sapply(
+  1:nPCs,
+  function(y) {
+    cms.caa <- stats::cancor(
+      x = pca.cancer.ruv$sing.val$u[, 1:y, drop = FALSE],
+      y = cms.dummies.CancerSample)
+    1 - prod(1 - cms.caa$cor ^ 2)
+  })
+```
+
+#### pcs and msi
+##### across all data - cancer samples
+
+```{r}
+nPCs <- 10
+msi.dummies.cancer <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$msi.status)
+msi.dummies.cancer <- msi.dummies.cancer[, c(2:ncol(msi.dummies.cancer))]
+cca.msi.cancer.ruv <- sapply(
+  1:nPCs,
+  function(y){
+    msi.caa <- stats::cancor(
+      x = pca.cancer.ruv$sing.val$u[, 1:y, drop = FALSE],
+      y = msi.dummies.cancer)
+    1 - prod(1 - msi.caa$cor^2)
+  })
+```
+
+#### pcs and years
+##### across all data - cancer samples
+
+```{r}
+years.dummies <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$year_mda)
+years.dummies <- years.dummies[, c(2:ncol(years.dummies))]
+nPCs <- 10
+cca.time.cancer.ruv <- sapply(
+  1:nPCs,
+  function(y) {
+    cca.time <- stats::cancor(
+      x = pca.cancer.ruv$sing.val$u[, 1:y, drop = FALSE],
+      y = years.dummies)
+    1 - prod(1 - cca.time$cor ^ 2)
+  })
+```
+
+#### pcs and main times
+##### across all data - cancer samples
+
+```{r}
+main.times.dummies <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$time.points)
+main.times.dummies <- main.times.dummies[, c(2:ncol(main.times.dummies))]
+nPCs <- 10
+cca.main.time.cancer.ruv <- sapply(
+  1:nPCs,
+  function(y) {
+    cca.time <- stats::cancor(
+      x = pca.cancer.ruv$sing.val$u[, 1:y, drop = FALSE],
+      y = main.times.dummies)
+    1 - prod(1 - cca.time$cor ^ 2)
+  })
+```
+
+#### pcs and plates
+##### within major times - cancer samples
+
+```{r}
+nPCs <- 10
+cca.plates.time.points.cancer.ruv <- lapply(
+  c(1:2), 
+  function(x){
+    pcs <- pca.cancer.main.times.ruv[[x]]
+    index.times <- coad.sampleAnnot.cancer$time.points == times[x]
+    plates.dummies.cancer <- fastDummies::dummy_cols(coad.sampleAnnot.cancer$plate_RNAseq[index.times])
+    plates.dummies.cancer <- plates.dummies.cancer[, c(2:ncol(plates.dummies.cancer))]
+    sapply(
+      1:nPCs, 
+      function(y){
+        cca.time <- stats::cancor(
+          x = pcs$sing.val$u[, 1:y, drop = FALSE],
+          y = plates.dummies.cancer)
+        1 - prod(1 - cca.time$cor ^ 2)
+      })
+  })
+names(cca.plates.time.points.cancer.ruv) <- times
+```
+
+### ANOVA 
+#### genes and years
+##### across all data - cancer samples
+
+```{r}
+ftest.time.cancer.ruv <- .Ftest(
+  data = coad.ruv,
+  variable = coad.sampleAnnot.cancer$year_mda,
+  is.log = TRUE,
+  n.cores = 11
+  )
+```
+
+#### genes and main times
+##### across all data - cancer samples
+
+```{r}
+ftest.main.time.cancer.ruv <- .Ftest(
+  data = coad.ruv,
+  variable = coad.sampleAnnot.cancer$time.points,
+  is.log = TRUE,
+  n.cores = 11
+)
+```
+
+#### genes and main times
+##### within major times - cancer samples
+
+```{r}
+time.points.ruv <- lapply(
+  times, 
+  function(x){
+    index.time <- coad.sampleAnnot.cancer$time.points == x
+    ftest <-
+      .Ftest(
+        data = coad.ruv[, index.time],
+        variable = coad.sampleAnnot.cancer$plate_RNAseq[index.time],
+        is.log = TRUE,
+        n.cores = 11
+      )
+    ftest
+  })
+names(ftest.plates.time.points.ruv) <- times
+```
+
+#### genes and plates
+##### within major times - cancer samples
+
+```{r}
+times <- levels(coad.sampleAnnot.cancer$time.points)
+ftest.plates.time.points.ruv <- lapply(
+  c(1:2), 
+  function(x){
+    index.time <- coad.sampleAnnot.cancer$time.points == times[x]
+        ftest.plates <-
+          .Ftest(
+            data = coad.ruv[ , index.time],
+            variable = coad.sampleAnnot.cancer$plate_RNAseq[index.time],
+            is.log = TRUE,
+            n.cores = 11
+          )
+    ftest.plates
+  })
+names(ftest.plates.time.points.ruv) <- times
+```
+
+### Linear regression
+#### pcs and library size
+##### across all data - cancer samples
+
+```{r}
+nPCs <- 10
+lreg.ls.cancer.ruv <- sapply(
+  1:nPCs,
+  function(y){
+    summary(lm(coad.sampleAnnot.cancer$ls ~ pca.cancer.ruv$sing.val$u[, 1:y]))$r.squared
+    })
+```
+
+### Silhouette coefficient analysis
+#### pcs and years
+##### across all data - cancer samples
+
+```{r}
+silCoef.time.cancer.ruv <- .silhouette.coeff(
+  pcs = pca.cancer.ruv$sing.val$u,
+  variable = coad.sampleAnnot.cancer$year_mda,
+  nPCs = 3
+)
+```
+
+#### pcs and main times
+##### across all data - cancer samples
+
+```{r}
+silCoef.main.time.cancer.ruv <- .silhouette.coeff(
+  pcs = pca.cancer.ruv$sing.val$u,
+  variable = coad.sampleAnnot.cancer$year_mda,
+  nPCs = 3
+)
+```
+
+#### pcs and cms
+##### across all data - cancer samples
+
+```{r}
+silCoef.cms.cancer.ruv <- .silhouette.coeff(
+  pcs = pca.cancer.ruv$sing.val$u,
+  variable = coad.sampleAnnot.cancer$cms.cancer.ruv,
+  nPCs = 3
+)
+```
+
+#### pcs and cms
+##### across all data - cancer samples
+
+```{r}
+silCoef.msi.cancer.ruv <- .silhouette.coeff(
+  pcs = pca.cancer.ruv$sing.val$u,
+  variable = coad.sampleAnnot.cancer$msi.status,
+  nPCs = 3
+)
+```
+
+## ARI
+### pcs and cms
+```{r}
+library(mclust)
+nPCs <- 3
+set.seed(2011110837)
+pcs <- pca.cancer.ruv$sing.val$u[,1:nPCs]
+BIC <- mclust::mclustBIC(data = pcs)
+mod <- mclust::Mclust(data = pcs, x = BIC, G = 5)
+ari.cms.cancer.ruv <- mclust::adjustedRandIndex(
+  mod$classification,
+  coad.sampleAnnot.cancer$cms.cancer.ruv
+  )
+names(ari.cms.cancer.ruv) <- 'ruv'
+```
+
+### pcs and main times
+
+```{r}
+library(mclust)
+nPCs <- 3
+set.seed(2011110837)
+pcs <- pca.cancer.ruv$sing.val$u[,1:nPCs]
+BIC <- mclust::mclustBIC(data = pcs)
+mod <- mclust::Mclust(data = pcs, x = BIC, G = 2)
+ari.main.times.cancer.ruv <- mclust::adjustedRandIndex(
+  mod$classification,
+  coad.sampleAnnot.cancer$time.points
+  )
+
+```
+
+### pcs and msi
+
+```{r}
+library(mclust)
+nPCs <- 3
+set.seed(2011110837)
+pcs <- pca.cancer.ruv$sing.val$u[,1:nPCs]
+BIC <- mclust::mclustBIC(data = pcs)
+mod <- mclust::Mclust(data = pcs, x = BIC, G = 3)
+ari.msi.cancer.ruv <- mclust::adjustedRandIndex(
+  mod$classification,
+  coad.sampleAnnot.cancer$msi.status
+  )
+```
+
+
+
+
+# All RUV-III statistical summaries 
+
+```{r}
+coad.ruv.stat.summaries <- list(
+  pca.cancer.ruv = pca.cancer.ruv,
+  pca.cancer.main.times.ruv = pca.cancer.main.times.ruv,
+  rle.cancer.ruv = rle.cancer.ruv,
+  ftest.main.time.cancer.ruv = ftest.main.time.cancer.ruv,
+  ftest.time.cancer.ruv = ftest.time.cancer.ruv,
+  ftest.plates.time.points.ruv = ftest.plates.time.points.ruv,
+  corr.geneLs.cancer.ruv = corr.geneLs.cancer.ruv,
+  corr.geneMedRle.cancer.ruv = corr.geneMedRle.cancer.ruv,
+  corr.genePurity.cancer.ruv = corr.genePurity.cancer.ruv,
+  cca.cms.cancer.ruv = cca.cms.cancer.ruv,
+  cca.main.time.cancer.ruv = cca.main.time.cancer.ruv,
+  cca.time.cancer.ruv = cca.time.cancer.ruv,
+  cca.msi.cancer.ruv = cca.msi.cancer.ruv,
+  cca.plates.time.points.cancer.ruv = cca.plates.time.points.cancer.ruv,
+  lreg.ls.cancer.ruv = lreg.ls.cancer.ruv,
+  silCoef.main.time.cancer.ruv = silCoef.main.time.cancer.ruv,
+  silCoef.cms.cancer.ruv = silCoef.cms.cancer.ruv,
+  silCoef.msi.cancer.ruv = silCoef.msi.cancer.ruv,
+  ari.cms.cancer.ruv = ari.cms.cancer.ruv,
+  ari.main.times.cancer.ruv = ari.main.times.cancer.ruv,
+  ari.msi.cancer.ruv = ari.msi.cancer.ruv
+)
+# saveRDS(
+#   object = coad.ruv.stat.summaries,
+#   file = paste0(
+#     coad.data.path, 
+#     'TCGA_COAD_RNAseq_RUVIII_allStatisticalSummaries.rds')
+#   )
+coad.ruv.stat.summaries <- readRDS(
+  file = paste0(
+    coad.data.path, 
+    'TCGA_COAD_RNAseq_RUVIII_allStatisticalSummaries.rds')
+  )
+```
+
+# Normalization assessment
+## Library size
+### linear regression
+
+```{r}
+### Data preparation
+ls.lnreg.normAssess <- data.frame(
+  Raw.counts = coad.tcga.stat.summaries$lreg.ls.cancer.tcga$HTseq_counts,
+  FPKM = coad.tcga.stat.summaries$lreg.ls.cancer.tcga$HTseq_FPKM,
+  FPKM.UQ = coad.tcga.stat.summaries$lreg.ls.cancer.tcga$HTseq_FPKM.UQ,
+  RUV.III = coad.ruv.stat.summaries$lreg.ls.cancer.ruv,
+  pcs = c(1:10)
+  )
+dplyr::
+ls.lnreg.normAssess <- ls.lnreg.normAssess %>% 
+  tidyr::pivot_longer(
+    -pcs, 
+    names_to = 'Datasets', 
+    values_to = 'ls') %>% 
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'Raw.counts', 'Raw counts')) %>% 
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'RUV.III', 'RUV-III')) %>%
+  dplyr::mutate(
+    Datasets = factor(
+      x = Datasets, 
+      levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III'))) %>%
+  data.frame(.)
+
+
+### Plots
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_LinearRegressionLibrarySize.tiff'),
+#   width = 2400,
+#   height = 1400,
+#   res = 400
+#     )
+ggplot(ls.lnreg.normAssess, aes(x = pcs, y = ls, group = Datasets)) +
+  geom_line(aes(color = Datasets), size = 1) + 
+  geom_point(aes(color = Datasets), size = 3) + 
+  xlab('PCs') + ylab (expression("R"^"2")) +
+  scale_color_manual(
+    values = c(dataSets.colors), 
+    labels = c('Raw counts', 'FPKM','FPKM.UQ', 'RUV-III'), guide = FALSE) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### correlation genes and library size
+
+```{r}
+### Data preparation
+ls.corr.gene <- data.frame(
+  Raw.counts = coad.tcga.stat.summaries$corr.geneLs.cancer.tcga$HTseq_counts$ls_rho,
+  FPKM = coad.tcga.stat.summaries$corr.geneLs.cancer.tcga$HTseq_FPKM$ls_rho,
+  FPKM.UQ = coad.tcga.stat.summaries$corr.geneLs.cancer.tcga$HTseq_FPKM.UQ$ls_rho,
+  RUV.III = coad.ruv.stat.summaries$corr.geneLs.cancer.ruv$ls_rho
+  )
+ls.corr.gene <- ls.corr.gene %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = "Datasets",
+    values_to = "corr.coeff") %>%
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'Raw.counts', 'Raw counts')) %>%
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'RUV.III', 'RUV-III')) %>%
+  dplyr::mutate(Datasets = factor(
+    x = Datasets,
+    levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )) %>%
+  data.frame()
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_CorrelationGenesAndLibrarySize.tiff'),
+#   width = 1500,
+#   height = 1300,
+#   res = 400
+#     )
+p <- ggplot(ls.corr.gene, aes(corr.coeff, fill = Datasets)) +
+  geom_histogram(alpha = 0.7, position = "identity") +
+  xlab("Spearman correlation") +
+  ylab('Frequency') +
+  scale_fill_manual(values = dataSets.colors, guide = 'none') +
+  # ggtitle('Correlation between individual genes expression and library size') +
+    theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+p
+# dev.off()
+```
+
+## Time effects
+### canonical correlation
+
+```{r}
+### Data preparation
+tim.cca <- data.frame(
+  Raw.counts = coad.tcga.stat.summaries$cca.main.time.cancer.tcga$HTseq_counts,
+  FPKM = coad.tcga.stat.summaries$cca.main.time.cancer.tcga$HTseq_FPKM,
+  FPKM.UQ = coad.tcga.stat.summaries$cca.main.time.cancer.tcga$HTseq_FPKM.UQ,
+  RUV.III  = coad.ruv.stat.summaries$cca.main.time.cancer.ruv,
+  pcs = c(1:10)
+  )
+tim.cca <- tim.cca %>%
+  tidyr::pivot_longer(
+    -pcs,
+    names_to = 'Datasets',
+    values_to = 'ls') %>%
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'Raw.counts', 'Raw counts')) %>%
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'RUV.III', 'RUV-III')) %>%
+  dplyr::mutate(Datasets = factor(
+    x = Datasets,
+    levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )) %>%
+  data.frame()
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_CaaMainTimeEffects.tiff'),
+#   width = 2400,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(tim.cca, aes(x = pcs, y = ls, group = Datasets)) +
+  geom_line(aes(color = Datasets), size = 1) +
+  geom_point(aes(color = Datasets), size = 3) +
+  xlab('PCs') +
+  ylab (expression("Vector correlation")) +
+  scale_color_manual(
+    values = c(dataSets.colors, 'tomato'),
+    labels = c('Raw counts', 'FPKM','FPKM.UQ', 'RUV-III'),
+    guide = FALSE) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### anova analysis
+
+```{r}
+### Data preparation
+time.ftest <- data.frame(
+  Raw.counts = coad.tcga.stat.summaries$ftest.main.time.cancer.tcga$HTseq_counts$FValue,
+  FPKM = coad.tcga.stat.summaries$ftest.main.time.cancer.tcga$HTseq_FPKM$FValue,
+  FPKM.UQ = coad.tcga.stat.summaries$ftest.main.time.cancer.tcga$HTseq_FPKM.UQ$FValue,
+  RUV.III = coad.ruv.stat.summaries$ftest.main.time.cancer.ruv$FValue
+  )
+time.ftest <- time.ftest %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'Datasets',
+    values_to = 'ls') %>%
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'Raw.counts', 'Raw counts')) %>%
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'RUV.III', 'RUV-III')) %>%
+  dplyr::mutate(Datasets = factor(
+    x = Datasets,
+    levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )) %>%
+  data.frame()
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_FtestMainTimeEffects.tiff'),
+#   width = 1200,
+#   height = 1200,
+#   res = 400
+#   )
+ggplot(time.ftest, aes(x = Datasets, y = log2(ls) )) +
+  geom_boxplot() +
+  xlab('') + ylab(expression(Log[2]~' F statistics')) +
+  scale_x_discrete(labels = c("Raw counts","FPKM","FPKM.UQ","RUV-III")) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .8),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### ari 
+
+```{r}
+### Data preparation
+df <- data.frame(
+  sli.coef = c(
+    coad.tcga.stat.summaries$ari.main.time.cancer.tcga, 
+    coad.ruv.stat.summaries$ari.main.time.cancer.ruv),
+  data.sets = c("Raw counts","FPKM","FPKM.UQ","RUV-III")
+  ) 
+df$data.sets <- factor(
+  x = df$data.sets, 
+  levels = c(
+    'Raw counts',
+    'FPKM', 
+    'FPKM.UQ', 
+    'RUV-III'))
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_READ_NormalizatioAssessment_ARIMainTimeEffects.tiff'),
+#   width = 1200,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(df, aes(x = data.sets, y = sli.coef)) +
+  geom_col() +
+  ylab('ARI') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### silhouette coefficient
+
+```{r}
+### Data preparation
+silCoef.main.time <- data.frame(
+  silCoef = c(
+    coad.tcga.stat.summaries$silCoef.main.time.cancer.tcga, 
+    coad.ruv.stat.summaries$silCoef.main.time.cancer.ruv),
+  Datasets = c('Raw.counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )
+silCoef.main.time$Datasets <- factor(
+  x = silCoef.main.time$Datasets, 
+  levels = c(
+    'Raw.counts',
+    'FPKM', 
+    'FPKM.UQ', 
+    'RUV-III')
+  )
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_READ_NormalizatioAssessment_SilhCoefMainTimeEffects.tiff'),
+#   width = 1200,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(silCoef.main.time, aes(x = Datasets, y = silCoef)) +
+  geom_col() +
+  ylab('Silhouette coefficient') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### de analysis
+
+```{r}
+### TCGA
+de.time.points.tcga <- lapply(
+  tcga.harmonized, 
+  function(x){
+    data <- SummarizedExperiment::assay(coad.se.cancer, x)
+    de <- .wilcoxon.test(
+      expr.data = data, 
+      is.log = FALSE, 
+      variable = coad.sampleAnnot.cancer$time.points, 
+      n.cores = 11)
+    de
+  })
+names(de.time.points.tcga) <- tcga.harmonized
+
+### RUV
+de.time.points.ruv <- .wilcoxon.test(
+      expr.data = coad.ruv, 
+      is.log = TRUE, 
+      variable = coad.sampleAnnot.cancer$time.points, 
+      n.cores = 11
+      )
+
+### Data preparation
+de.time.points <- data.frame(
+  Raw.counts = de.time.points.tcga$HTseq_counts$pvalue,
+  FPKM = de.time.points.tcga$HTseq_FPKM$pvalue,
+  FPKM.UQ = de.time.points.tcga$HTseq_counts$pvalue,
+  RUV.III = de.time.points.ruv$pvalue
+) %>%
+  tidyr::pivot_longer(everything(),
+                      names_to = 'Datasets',
+                      values_to = 'P_value') %>%
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'Raw.counts', 'Raw counts')) %>%
+  dplyr::mutate(Datasets = replace(Datasets, Datasets == 'RUV.III', 'RUV-III')) %>%
+  dplyr::mutate(Datasets = factor(
+    x = Datasets,
+    levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )) %>%
+  data.frame()
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_DeBetweenTimePoints.tiff'),
+#   width = 3000,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(de.time.points, aes(x = P_value)) +
+  geom_histogram(binwidth = 0.1) +
+  scale_x_continuous(breaks = c(seq(0, 1, .5))) +
+  xlab('p_values') + ylab('Frequency') +
+  facet_wrap( ~ Datasets, ncol = 4) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 16),
+    plot.title = element_text(size = 18),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 16)
+  )
+# dev.off()
+```
+
+### pca plots years
+
+```{r}
+sapply(
+  c(1:3),
+  function(x){
+    tiff(paste0(
+      coad.fig.path,
+      'TCGA_COAD_Harmonized_PcaPlots',
+      '_PcaOnCancerSamples_ColoredByYears_',
+      tcga.harmonized[x],
+      '.tiff'),
+      width = 4500,
+      height = 1400,
+      res = 400
+    )
+    pcs <- pca.cancer.tcga[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'Time (years)',
+      group = coad.sampleAnnot.cancer$time.points,
+      color = major.times.colors,
+      strokeSize = .2,
+      pointSize = 2.5,
+      strokeColor = 'gray30',
+      alpha = .5)
+    do.call(
+      gridExtra::grid.arrange,
+      c(p[1:3],
+        ncol = 3,
+        top = tcga.harmonized[x])
+      )
+    dev.off()
+  })
+
+# Unwanted variation
+
+## Time (years)
+### PCA plots
+### Cancer samples
+tiff(
+  paste0(
+    coad.fig.path,
+    'TCGA_COAD_RUVAdjusted_PcaPlots_OnCancerSamplesColoredByTime.tiff'
+  ),
+  width = 4500,
+  height = 1400,
+  res = 400)
+pcs <- pca.cancer.ruv
+p <- .scatter.density.pc(
+  pcs = pcs$sing.val$u[, 1:3],
+  pc.var = pcs$var,
+  group.name = 'Time (years)',
+  group = coad.sampleAnnot.cancer$time.points,
+  color = major.times.colors,
+  strokeSize = .2,
+  pointSize = 2.5,
+  strokeColor = 'gray30',
+  alpha = .5
+)
+do.call(gridExtra::grid.arrange,
+        c(p[1:3],
+          ncol = 3,
+          top = 'RUV-III'))
+dev.off()
+```
+
+### pca plots major times
+
+```{r}
+### Cancer samples
+sapply(
+  c(1:3),
+  function(x){
+    tiff(paste0(
+      coad.fig.path,
+      'TCGA_COAD_Harmonized_PcaPlots_',
+      '_PcaOnCancerSamples_ColoredByMainTimePoints_',
+      tcga.harmonized[x],
+      '.tiff'),
+      width = 4500,
+      height = 1400,
+      res = 400
+    )
+    pcs <- pca.cancer.tcga[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'Time (years)',
+      group = coad.sampleAnnot.cancer$time.points,
+      color = major.times.colors,
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .5)
+    do.call(
+      gridExtra::grid.arrange,
+      c(p[1:3], ncol = 3)
+      )
+    dev.off()
+  })
+
+
+## Main time points
+### PCA plots
+### Cancer samples
+# tiff(
+#   paste0(
+#     coad.fig.path,
+#     'TCGA_READ_RUVAdjusted_PcaOnCancerSamplesColoredByMainTime_.tiff'
+#   ),
+#   width = 4500,
+#   height = 1400,
+#   res = 400)
+pcs <- pca.cancer.ruv
+p <- .scatter.density.pc(
+  pcs = pcs$sing.val$u[, 1:3],
+  pc.var = pcs$var,
+  group.name = 'Time (years)',
+  group = coad.sampleAnnot.cancer$time.points,
+  color = major.times.colors,
+  strokeSize = .2,
+  pointSize = 3,
+  strokeColor = 'gray30',
+  alpha = .6
+  )
+do.call(
+  gridExtra::grid.arrange,
+  c(p[1:3],
+    ncol = 3))
+# dev.off()
+```
+
+## Plates
+### canonical correlation analysis
+
+```{r}
+cca.plate.normAssess <- data.frame(
+  raw_b1 = coad.tcga.stat.summaries$cca.plates.time.points.cancer.tcga$`2010`$HTseq_counts,
+  fpkm_b1 = coad.tcga.stat.summaries$cca.plates.time.points.cancer.tcga$`2010`$HTseq_FPKM,
+  fpkm.uq_b1 = coad.tcga.stat.summaries$cca.plates.time.points.cancer.tcga$`2010`$HTseq_FPKM.UQ,
+  raw_b2 = coad.tcga.stat.summaries$cca.plates.time.points.cancer.tcga$`2011:2014`$HTseq_counts,
+  fpkm_b2 = coad.tcga.stat.summaries$cca.plates.time.points.cancer.tcga$`2011:2014`$HTseq_FPKM,
+  fpkm.uq_b2 = coad.tcga.stat.summaries$cca.plates.time.points.cancer.tcga$`2011:2014`$HTseq_FPKM.UQ,
+  ruv_b1 = coad.ruv.stat.summaries$cca.plates.time.points.cancer.ruv$`2010`,
+  ruv_b2 = coad.ruv.stat.summaries$cca.plates.time.points.cancer.ruv$`2011:2014`,
+  pc = c(1:10)
+  )
+cca.plate.normAssess <- cca.plate.normAssess %>%
+  tidyr::pivot_longer(
+    -pc,
+    names_to = 'Datasets',
+    values_to = 'corr')  %>% 
+  dplyr::mutate(Batch = 'Batch 1') %>% 
+  dplyr::mutate(Batch = replace(Batch, grep('b2', Datasets), 'Batch 2')) %>%
+  dplyr::mutate(Data = 'Raw counts') %>% 
+  dplyr::mutate(Data = replace(Data, grep('fpkm', Datasets), 'FPKM')) %>%
+  dplyr::mutate(Data = replace(Data, grep('fpkm.uq', Datasets), 'FPKM.UQ')) %>%
+  dplyr::mutate(Data = replace(Data, grep('ruv', Datasets), 'RUV-III')) %>%
+   dplyr::mutate(Data = factor(
+    x = Data,
+    levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )) %>%
+  data.frame()
+
+### Plot
+# tiff(
+#   paste0(
+#     coad.fig.path,
+#     'TCGA_COAD_NormalizatioAssessment_CCA_PlateEffectsWithinTimes.tiff'
+#   ),
+#   width = 2400,
+#   height = 1400,
+#   res = 400
+# )
+ggplot() +
+  geom_point(
+    data = cca.plate.normAssess[cca.plate.normAssess$Batch == 'Batch 1'  ,],
+    aes(
+      x = pc,
+      y = corr ,
+      group = Data,
+      color = Data
+    ),
+    size = 3) +
+  geom_line(
+    data = cca.plate.normAssess[cca.plate.normAssess$Batch == 'Batch 1'  , ],
+    aes(
+      x = pc,
+      y = corr ,
+      group = Data,
+      color = Data
+    ),
+    linetype = "dashed",
+    size = 1
+  ) +
+  geom_point(
+    data = cca.plate.normAssess[cca.plate.normAssess$Batch == 'Batch 2'  ,],
+    aes(
+      x = pc,
+      y = corr ,
+      group = Data,
+      color = Data
+    ),
+    size = 3) +
+  scale_color_manual(
+    values = c(dataSets.colors),
+    labels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III'),
+    guide = FALSE
+  ) +
+  geom_line(
+    data = cca.plate.normAssess[cca.plate.normAssess$Batch == 'Batch 2'  , ],
+    aes(
+      x = pc,
+      y = corr,
+      group = Data,
+      color = Data
+    ),
+    size = 1) +
+  xlab('PCs') +
+  ylab("Vector correlation") +
+  scale_color_manual(
+    values = c(dataSets.colors),
+    labels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III'),
+    guide = 'none'
+  ) +
+  scale_x_continuous(
+    breaks = (1:10), 
+    labels = c('PC1', paste0('PC1:', 2:10))) +
+  scale_y_continuous(
+    breaks = scales::pretty_breaks(n = 5),
+    limits = c(0, 1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(
+      size = 12,
+      angle = 45,
+      hjust = 1
+    ),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### anova
+
+```{r}
+ftest.platePerTime.normAssess <- data.frame(
+  raw_b1 = coad.tcga.stat.summaries$ftest.plates.time.points.tcga[[1]]$HTseq_counts$FValue,
+  fpkm_b1 = coad.tcga.stat.summaries$ftest.plates.time.points.tcga[[1]]$HTseq_FPKM$FValue,
+  fpkm.uq_b1 = coad.tcga.stat.summaries$ftest.plates.time.points.tcga[[1]]$HTseq_FPKM.UQ$FValue,
+  raw_b2 = coad.tcga.stat.summaries$ftest.plates.time.points.tcga[[2]]$HTseq_counts$FValue,
+  fpkm_b2 = coad.tcga.stat.summaries$ftest.plates.time.points.tcga[[2]]$HTseq_FPKM$FValue,
+  fpkm.uq_b2 = coad.tcga.stat.summaries$ftest.plates.time.points.tcga[[2]]$HTseq_FPKM.UQ$FValue,
+  ruv_b1 = coad.ruv.stat.summaries$ftest.plates.time.points.ruv$`2010`$FValue,
+  ruv_b2 = coad.ruv.stat.summaries$ftest.plates.time.points.ruv$`2011:2014`$FValue
+  )
+ftest.platePerTime.normAssess <- ftest.platePerTime.normAssess %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'Datasets',
+    values_to = 'F_values')  %>% 
+  dplyr::mutate(Batch = '2010') %>% 
+  dplyr::mutate(Batch = replace(Batch, grep('b2', Datasets), '2011:2014')) %>%
+  dplyr::mutate(Data = 'Raw counts') %>% 
+  dplyr::mutate(Data = replace(Data, grep('fpkm', Datasets), 'FPKM')) %>%
+  dplyr::mutate(Data = replace(Data, grep('fpkm.uq', Datasets), 'FPKM.UQ')) %>%
+  dplyr::mutate(Data = replace(Data, grep('ruv', Datasets), 'RUV-III')) %>%
+   dplyr::mutate(Data = factor(
+    x = Data,
+    levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )) %>%
+  data.frame()
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_Ftest_PlateEffectsWithinTimes.tiff'),
+#   width = 2400,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(ftest.platePerTime.normAssess, aes(x = Data, y = log2(F_values), fill = Batch)) +
+  geom_boxplot(
+    position = position_dodge(width = .7),
+    width = 1,
+    alpha = 0.8,
+    lwd = .7
+  ) +
+  scale_fill_manual(values = major.times.colors) +
+  ylab(expression(Log[2]~'F statistics')) +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 16),
+    axis.text.y = element_text(size = 12),
+    legend.position = 'none',
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+## RLE 
+### boxplot
+
+```{r}
+rle.tcga <- lapply(
+  c(1:3), 
+  function(x){
+    coad.tcga.stat.summaries$rle.cancer.tcga[[x]]$rle
+  })
+rle.tcga <- do.call(cbind, rle.tcga)
+rle.all <- as.data.frame(cbind(
+  rle.tcga, 
+  coad.ruv.stat.summaries$rle.cancer.ruv$rle)
+  )
+
+colnames(rle.all) <- c(
+  paste0('Raw.counts_', c(1:439)),
+  paste0('FPKM_', c(1:439)),
+  paste0('FPKM.UQ_', c(1:439)),
+  paste0('RUV-III_', c(1:439))
+  )
+rle.all <- rle.all %>% 
+  tidyr::pivot_longer(
+    everything(), 
+    names_to = 'samples',
+    values_to = 'rle') %>% 
+  data.frame(.)
+
+data.sample <- strsplit(rle.all$samples, '_')
+data <- unlist(lapply(data.sample, function(x) x[1]))
+samples <- unlist(lapply(data.sample, function(x) x[2]))
+
+rle.all$samples.no <- as.factor(samples)
+rle.all$data <- data
+
+rle.all$samples.no <- factor(rle.all$samples.no, levels = unique(rle.all$samples.no))
+rle.all$data <- factor(rle.all$data , levels = unique(rle.all$data ))
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_RLE_RawCounts.tiff'),
+#   width = 4000,
+#   height = 6400,
+#   res = 400
+#   )
+p <- ggplot(rle.all, aes(x = samples.no, y = rle)) +
+  Ipaper::geom_boxplot2() +
+  ylab('RLE') +
+  xlab('Samples') +
+  stat_summary(
+    fun = median,
+    geom = "point",
+    shape = 20,
+    size = 3,
+    color = "darkgreen",
+    fill = "darkgreen"
+  ) +
+  facet_wrap(~data, ncol = 1) +
+  geom_hline(yintercept = 0, col = 'red') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    plot.title = element_text(size = 18),
+    axis.text.x = element_text(size = 2),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 18)
+  )
+p
+# dev.off()
+```
+
+## Purity estimates
+
+```{r}
+### TCGA
+purity.gene.sig <- coad.geneAnnot$stromal == 'yes' |
+  coad.geneAnnot$immnue == 'yes'
+sum(purity.gene.sig) # 279
+purity.gene.sig <- row.names(coad.fpkm.cancer)[purity.gene.sig]
+rankDatas.tcga <- singscore::rankGenes(coad.fpkm.cancer)
+purity.score.tcga <- singscore::simpleScore(
+  rankData = rankDatas.tcga, 
+  upSet = purity.gene.sig,
+  centerScore = F
+  )
+
+### RUV-III
+rankDatas.ruv <- singscore::rankGenes(coad.ruv)
+purity.score.ruv <- singscore::simpleScore(
+  rankData = rankDatas.ruv, 
+  upSet = purity.gene.sig,
+  centerScore = F
+  )
+df <- data.frame(tcga = purity.score.tcga$TotalScore, ruv = purity.score.ruv$TotalScore)
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_PurityScores.tiff'),
+#   width = 2000,
+#   height = 2000,
+#   res = 400
+#   )
+ggplot(df, aes(x = tcga, y = ruv)) +
+  geom_point(size = 2) +
+  xlab('Tumour purity scores (FPKM.UQ)') +
+  ylab('Tumour purity scores (RUV-III)') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 22),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    legend.position = 'none',
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 24)
+  )
+# dev.off()
+```
+
+### correlation between PCs and median of RLE
+
+```{r}
+#### Median
+### TCGA
+data.sets.tcga <- c('Raw.counts', 'FPKM', 'FPKM.UQ')
+rle.pcs.tcag <- lapply(
+  c(1:3), 
+  function(x){
+    pcs <- as.data.frame(coad.tcga.stat.summaries$pca.cancer.tcga[[x]]$sing.val$u[,1:3])
+    colnames(pcs) <- paste0('PC', c(1:3))
+    pcs$rle <- coad.tcga.stat.summaries$rle.cancer.tcga[[x]]$rle.med
+    pcs$time <- coad.sampleAnnot.cancer$time.points
+    pcs$purity <- coad.sampleAnnot.cancer$purity_HTseq_FPKM.UQ
+    pcs.rle <- pcs %>% 
+      tidyr::pivot_longer(
+        -c(rle, time, purity), 
+        values_to = 'pcs', 
+        names_to = 'PCs') %>% 
+      data.frame()
+    pcs.rle$data  <- rep(data.sets.tcga[x], nrow(pcs.rle))
+    pcs.rle
+  })
+rle.pcs.tcag <- do.call(rbind, rle.pcs.tcag)
+
+### RUV_III
+pcs.ruv <- as.data.frame(coad.ruv.stat.summaries$pca.cancer.ruv$sing.val$u[,1:3])
+colnames(pcs.ruv) <- paste0('PC', c(1:3))
+pcs.ruv$rle <- coad.ruv.stat.summaries$rle.cancer.ruv$rle.med
+pcs.ruv$time <- coad.sampleAnnot.cancer$time.points
+pcs.ruv$purity <- coad.sampleAnnot.cancer$purity_HTseq_FPKM.UQ
+
+pcs.rle.ruv <- pcs.ruv %>%
+  tidyr::pivot_longer(
+    -c(rle, time, purity), 
+    values_to = 'pcs', 
+    names_to = 'PCs') %>%
+  data.frame()
+pcs.rle.ruv$data  <- rep('RUV-III', nrow(pcs.rle.ruv))
+
+### All
+pcs.rle.all <- as.data.frame(rbind(rle.pcs.tcag, pcs.rle.ruv))
+pcs.rle.all$data.pcs <- paste0(pcs.rle.all$data,'_', pcs.rle.all$PCs)
+pcs.rle.all$data.pcs <- factor(pcs.rle.all$data.pcs, levels = unique(pcs.rle.all$data.pcs))
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_PcsRLEColoreTimePoints.tiff'),
+#   width = 4000,
+#   height = 4000,
+#   res = 400
+#   )
+ggplot(pcs.rle.all, aes(x = pcs, y = rle)) +
+  geom_point(aes(color = time), size = 2) +
+  scale_color_manual(values = major.times.colors) +
+  # geom_smooth(method = 'lm', se = FALSE, col = 'black') +
+  facet_wrap(~data.pcs, ncol = 3, scale = 'free') +
+  ylab('RLE') +
+  xlab('PCs') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    plot.title = element_text(size = 18),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 18),
+    legend.position = 'bottom'
+  ) +
+  guides(
+    color = guide_legend(
+      title = "Time (years)",
+      override.aes = list(size = 5, fill = NA),
+      title.position = "top",
+      title.theme = element_text(
+        size = 20,
+        colour = "black",
+        angle = 0
+      )
+    )
+  )
+# dev.off()
+
+### Purity
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_PcsRLEColoredPurity.tiff'),
+#   width = 4000,
+#   height = 4000,
+#   res = 400
+#   )
+ggplot(pcs.rle.all, aes(x = pcs, y = rle, color = purity)) +
+  geom_point(size = 2) +
+  scale_colour_gradientn(colors = viridis::viridis(n =10), name = "Purity") +
+  facet_wrap(~data.pcs, ncol = 3, scale = 'free') +
+  ylab('RLE') +
+  xlab('PCs') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    plot.title = element_text(size = 18),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    legend.text = element_text(size = 14),
+    legend.title = element_text(size = 18),
+    strip.text.x = element_text(size = 18),
+    legend.position = 'bottom'
+  ) 
+# dev.off()
+```
+
+### correlation between genes and medians of RLE / library size
+
+```{r}
+ls.rle <- lapply(
+  tcga.harmonized,
+  function(x){
+    df <- data.frame(
+      ls = coad.tcga.stat.summaries$corr.geneLs.cancer.tcga[[x]]$ls_rho,
+      rle = coad.tcga.stat.summaries$corr.geneMedRLe.cancer.tcga[[x]]$RleMed_rho,
+      data = rep(x, length(coad.tcga.stat.summaries$corr.genePurity.cancer.tcga[[x]]$purity_rho))
+    )
+  })
+ls.rle.tcga <- do.call(rbind, ls.rle)
+### RUV
+ls.rle.ruv <- data.frame(
+  ls = coad.ruv.stat.summaries$corr.geneLs.cancer.ruv$ls_rho,
+  rle = coad.ruv.stat.summaries$corr.geneMedRle.cancer.ruv$MedRle_rho,
+  data = rep('RUV-III', length(coad.ruv.stat.summaries$corr.geneMedRle.cancer.ruv$MedRle_rho))
+)
+
+### All
+ls.rle.all <- rbind(ls.rle.tcga, ls.rle.ruv)
+
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_GenesMedRleLibrarySize.tiff'),
+#   width = 6500,
+#   height = 2000,
+#   res = 400
+#   )
+ls.rle.all$data <- factor(ls.rle.all$data, levels = unique(ls.rle.all$data))
+ggplot(ls.rle.all, aes( x = ls, y = rle)) +
+  geom_point(color = 'gray30', alpha = .3) +
+  geom_density2d() +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  ylim(-1,1) +
+  xlim(-1, 1) +
+  xlab("Spearman correlation") +
+  ylab("Spearman correlation") +
+  facet_wrap( ~ data, ncol = 4) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 22),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    legend.position = 'none',
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 24)
+  )
+# dev.off()
+```
+
+### correlation between genes and medians of RLE / purity
+
+```{r}
+purity.rle <- lapply(
+  tcga.harmonized,
+  function(x){
+    df <- data.frame(
+      purity = coad.tcga.stat.summaries$corr.genePurity.cancer.tcga[[x]]$purity_rho,
+      rle = coad.tcga.stat.summaries$corr.geneMedRLe.cancer.tcga[[x]]$RleMed_rho,
+      data = rep(x, length(coad.tcga.stat.summaries$corr.genePurity.cancer.tcga[[x]]$purity_rho))
+    )
+  })
+purity.rle.tcga <- do.call(rbind, purity.rle)
+### RUV
+purity.rle.ruv <- data.frame(
+  purity = coad.ruv.stat.summaries$corr.genePurity.cancer.ruv$purity_rho,
+  rle = coad.ruv.stat.summaries$corr.geneMedRle.cancer.ruv$MedRle_rho,
+  data = rep('RUV-III', length(coad.ruv.stat.summaries$corr.geneMedRle.cancer.ruv$MedRle_rho))
+)
+
+### All
+purity.rle.all <- rbind(purity.rle.tcga, purity.rle.ruv)
+
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_GenesMedRlePurity.tiff'),
+#   width = 6500,
+#   height = 2000,
+#   res = 400
+#   )
+purity.rle.all$data <- factor(
+  purity.rle.all$data, 
+  levels = unique(purity.rle.all$data)
+  )
+ggplot(purity.rle.all, aes( x = purity, y = rle)) +
+  geom_point(color = 'gray30', alpha = .3) +
+  geom_density2d() +
+  geom_hline(yintercept = 0) +
+  geom_vline(xintercept = 0) +
+  ylim(-1,1) +
+  xlim(-1, 1) +
+  xlab("Spearman correlation") +
+  ylab("Spearman correlation") +
+  facet_wrap( ~ data, ncol = 4) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 22),
+    axis.text.x = element_text(size = 20),
+    axis.text.y = element_text(size = 20),
+    legend.position = 'none',
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 24)
+  )
+# dev.off()
+```
+
+## CMS
+### canonical correlation analysis
+
+```{r}
+cca.cms <- data.frame(
+  Raw.counts = coad.tcga.stat.summaries$cca.cms.cancer.tcga$HTseq_counts,
+  FPKM = coad.tcga.stat.summaries$cca.cms.cancer.tcga$HTseq_FPKM,
+  FPKM.UQ = coad.tcga.stat.summaries$cca.cms.cancer.tcga$HTseq_FPKM.UQ,
+  RUV.III = coad.ruv.stat.summaries$cca.cms.cancer.ruv,
+  pcs = c(1:10)
+  )
+cca.cms <- cca.cms %>% 
+  tidyr::pivot_longer(
+    -pcs, 
+    names_to = 'Datasets', 
+    values_to = 'ls') %>% 
+  dplyr::mutate(Datasets = replace(Datasets, grep('Raw.counts', Datasets), 'Raw counts')) %>%
+  dplyr::mutate(Datasets = replace(Datasets, grep('RUV.III', Datasets), 'RUV-III')) %>%
+  dplyr::mutate(Datasets = factor(Datasets, levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III'))) %>%
+  data.frame()
+
+
+ftest.platePerTime.normAssess <- ftest.platePerTime.normAssess %>%
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'Datasets',
+    values_to = 'F_values')  %>% 
+  dplyr::mutate(Batch = '2010') %>% 
+  dplyr::mutate(Batch = replace(Batch, grep('b2', Datasets), '2011:2014')) %>%
+  dplyr::mutate(Data = 'Raw counts') %>% 
+
+   dplyr::mutate(Data = factor(
+    x = Data,
+    levels = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )) %>%
+  data.frame()
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_CaaCmsCancer.tiff'),
+#   width = 2400,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(cca.cms, aes(x = pcs, y = ls, group = Datasets)) +
+  geom_line(aes(color = Datasets), size = 1) + 
+  geom_point(aes(color = Datasets), size = 3) + 
+  xlab('PCs') + 
+  ylab (expression("Vector correlation")) +
+  scale_color_manual(
+    values=c(dataSets.colors), 
+    labels = c('Raw counts', 'FPKM','FPKM.UQ', 'RUV-III'),
+    guide = FALSE) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12,angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### silhouette coefficients
+
+```{r}
+silCoef.cms.cancer <- data.frame(
+  silCoef = c(
+    coad.tcga.stat.summaries$silCoef.cms.cancer.tcga, 
+    coad.ruv.stat.summaries$silCoef.cms.cancer.ruv),
+  Datasets = c('Raw.counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )
+silCoef.cms.cancer$Datasets <- factor(
+  x = silCoef.cms.cancer$Datasets, 
+  levels = c(
+    'Raw.counts',
+    'FPKM', 
+    'FPKM.UQ', 
+    'RUV-III')
+  )
+### plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_SilhCoefCms.tiff'),
+#   width = 1200,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(silCoef.cms.cancer, aes(x = Datasets, y = silCoef)) +
+  geom_col() +
+  ylab('Silhouette coefficient') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### ari
+
+```{r}
+ari.cms.cancer <- data.frame(
+  ari.index = c(
+    coad.tcga.stat.summaries$ari.cms.cancer.tcga, 
+    coad.ruv.stat.summaries$ari.cms.cancer.ruv),
+  Datasets = c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )
+ari.cms.cancer$Datasets <- factor(
+  x = ari.cms.cancer$Datasets, 
+  levels = c(
+    'Raw counts',
+    'FPKM', 
+    'FPKM.UQ', 
+    'RUV-III')
+  )
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_ARICms.tiff'),
+#   width = 1200,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(ari.cms.cancer, aes(x = Datasets, y = ari.index)) +
+  geom_col() +
+  ylab('ARI') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = .85),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### pca plots
+
+```{r}
+### TCGA
+library(ggplot2)
+library(cowplot)
+### Cancer samples
+cms.calls.cancer.tcga <- coad.sampleAnnot[index.cancer , c(
+  'cms.cancer.rawCounts',
+  'cms.cancer.fpkm',
+  'cms.cancer.fpkmUq')
+  ]
+sapply(
+  c(1:3),
+  function(x){
+    tiff(paste0(
+      coad.fig.path,
+      'TCGA_COAD_Harmonized_PcaPlots_',
+      'OnCancerSamples_ColoredByCmsOnCancerSamples_',
+      tcga.harmonized[x],
+      '.tiff'),
+      width = 6000,
+      height = 1400,
+      res = 400
+      )
+    pcs <- coad.tcga.stat.summaries$pca.cancer.tcga[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'CMS',
+      group = cms.calls.cancer.tcga[,x],
+      color = cms.colors,
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .6)
+    do.call(
+      gridExtra::grid.arrange,
+      c(p,
+        ncol = 4)
+      )
+    dev.off()
+  })
+
+### RUV
+# tiff(
+#   paste0(
+#     coad.fig.path,
+#     'TCGA_COAD_RuvAdjusted_PcaPlots_',
+#     'OnCancerSamples_ColoredByCmsOnCancerSamples.tiff'
+#   ),
+#   width = 6000,
+#   height = 1400,
+#   res = 400
+# )
+pcs <- coad.ruv.stat.summaries$pca.cancer.ruv
+p <- .scatter.density.pc(
+  pcs = pcs$sing.val$u[, 1:3],
+  pc.var = pcs$var,
+  group.name = 'CMS',
+  group = coad.sampleAnnot.cancer$cms.ruv,
+  color = cms.colors,
+  strokeSize = .2,
+  pointSize = 3,
+  strokeColor = 'gray30',
+  alpha = .6
+)
+do.call(gridExtra::grid.arrange,
+        c(p,
+          ncol = 4))
+# dev.off()
+```
+
+### cms amd library size
+
+```{r}
+cms.groups <-
+  c(
+    'cms.cancer.rawCounts',
+    'cms.cancer.fpkm',
+    'cms.cancer.fpkmUq',
+    'cms.cancer.time.points.rawCounts',
+    'cms.cancer.time.points.fpkm',
+    'cms.cancer.time.points.fpkmUq',
+    'cms.cancer.ruv',
+    'ls'
+  )
+new.info <- coad.sampleAnnot.cancer[, cms.groups]
+colnames(new.info) <-
+  c(
+    'Raw counts',
+    'FPKM',
+    'FPKM.UQ',
+    'Raw counts (within times)',
+    'FPKM (within times)',
+    'FPKM.UQ (within times)',
+    'RUV-III',
+    'ls'
+  )
+new.info <- new.info %>% 
+  tidyr::pivot_longer(
+    -ls, 
+    names_to = 'Datasets', 
+    values_to = 'cms') %>%
+  dplyr::mutate(Datasets = factor(
+    Datasets, 
+    levels = c(
+      'Raw counts', 
+      'FPKM', 
+      'FPKM.UQ', 
+      'Raw counts (within times)' , 
+      'FPKM (within times)' , 
+      'FPKM.UQ (within times)', 
+      'RUV-III'))) %>%
+  data.frame()
+# tiff(
+#   paste0(
+#     coad.fig.path,
+#     'TCGA_COAD_NormAssess_CmsAndLibrarySize.tiff'
+#   ),
+#   width = 5000,
+#   height = 4000,
+#   res = 400
+# )
+ggplot(new.info, aes(x = cms, y = ls)) +
+  geom_boxplot() +
+  ylab('Library size') +
+  xlab('CMS') +
+  facet_wrap(~Datasets) +
+    theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 28),
+    axis.title.y = element_text(size = 28),
+    axis.text.x = element_text(size = 18, angle = 25, hjust = .85),
+    axis.text.y = element_text(size = 18),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 22)
+  )
+# dev.off()
+
+# tiff(
+#   paste0(
+#     coad.fig.path,
+#     'TCGA_COAD_NormAssess_NumberOfNainCMS.tiff'
+#   ),
+#   width = 4000,
+#   height = 4000,
+#   res = 400
+# )
+new.info <- new.info[new.info$cms == 'Not classified' , ]
+ggplot(new.info, aes(x = Datasets)) +
+  geom_bar() +
+  xlab('') +
+     theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 34),
+    axis.text.x = element_text(size = 24, angle = 25, hjust = .85),
+    axis.text.y = element_text(size = 22),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 14)
+  )
+# dev.off()
+```
+
+### visualize different CMS calls
+
+```{r}
+combi <- combn(x = c(
+  'cms.cancer.fpkm', 
+  'cms.cancer.fpkmUq', 
+  'cms.cancer.time.points.fpkm', 
+  'cms.cancer.time.points.fpkmUq', 
+  'cms.cancer.ruv'), 
+  m = 2
+  )
+
+name.combi <- combn(x = c(
+  'FPKM', 
+  'FPKM.UQ', 
+  'FPKM (within times)', 
+  'FPKM.UQ (within times)', 
+  'RUV-III'), 
+  m = 2
+  )
+
+coad.sampleAnnot.cancer <- droplevels(coad.sampleAnnot.cancer)
+cms.confu.mat <- lapply(
+  c(1:10), 
+  function(x){
+    cms.table <- table(
+    coad.sampleAnnot.cancer[, combi[1,x]], 
+    coad.sampleAnnot.cancer[, combi[2,x]]
+    )
+  cms.table <- as.data.frame.matrix(cms.table)
+  h <- ComplexHeatmap::Heatmap(
+    matrix = cms.table,
+    col = c('gray', 'gray40'),
+    column_title = paste0(name.combi[1, x], ' vs. ', '\n ' , name.combi[2, x]),
+    column_names_gp = gpar(fontsize = 18),
+    row_names_gp = gpar(fontsize = 18),
+    column_title_gp = gpar(fontsize = 18),
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    column_names_rot = 20,
+    show_heatmap_legend = FALSE,
+    name = 'Frequency',
+    cell_fun = function(j, i, x, y, width, height, fill) {
+      grid::grid.text(sprintf("%.0f", cms.table[i, j]),
+                      x,
+                      y,
+                      gp = grid::gpar(fontsize = 14))
+    })
+  })
+
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_Harmonized_CmsClustering_VisualizationOfDifferentCmsResults1.tiff'),
+#   width = 7500,
+#   height = 2000,
+#   res = 400
+#   )
+ComplexHeatmap::draw(
+  cms.confu.mat[[1]] + 
+  cms.confu.mat[[2]] + 
+  cms.confu.mat[[3]] + 
+  cms.confu.mat[[4]] + 
+  cms.confu.mat[[5]] )
+# dev.off()
+
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_Harmonized_CmsClustering_VisualizationOfDifferentCmsResults2.tiff'),
+#   width = 7500,
+#   height = 2000,
+#   res = 400
+#   )
+ComplexHeatmap::draw(
+  cms.confu.mat[[6]] + 
+  cms.confu.mat[[7]] + 
+  cms.confu.mat[[8]] + 
+  cms.confu.mat[[9]] + 
+  cms.confu.mat[[10]] )
+# dev.off()
+```
+
+### survival analysis
+
+```{r}
+cols <- c(
+  'Sample',
+  'age_at_initial_pathologic_diagnosis_liu',
+  'OS.time_liu',
+  'OS_liu',
+  'cms.cancer.fpkm',
+  'cms.cancer.fpkmUq',
+  'cms.cancer.time.points.fpkm',
+  'cms.cancer.time.points.fpkmUq',
+  'cms.cancer.ruv'
+)
+new.info <- coad.sampleAnnot[ , cols]
+new.info <- new.info[ complete.cases(new.info) , ]
+
+colnames(new.info)[5:9] <- c(
+  'FPKM',
+  'FPKM.UQ',
+  'FPKM (within each time)',
+  'FPKM.UQ (within each times)',
+  'RUV-III'
+  )
+
+set.seed(2023091423)
+cms.survival <- lapply(
+  colnames(new.info)[5:9],
+  function(x){
+    index <- new.info[,x] != 'Not classified' & new.info[,x] != 'Adjacent normal'
+    survival.plot <- survival_plot(
+      data = coad.ruv,
+      stratify = 'covariate',
+      annot = new.info[index , ],
+      scoreCol = NULL,
+      covariate = x,
+      gene = NULL,
+      isCategoricalCov = TRUE,
+      timeCol = "OS.time_liu",
+      eventCol = "OS_liu",
+      mainTitle1 = x,
+      nGroup = NULL,
+      confInt = FALSE,
+      ylabel = "Survival",
+      cols = c('orange','royalblue2','plum2','seagreen3'),
+      nColLegend = 1,
+      plotType = "autoplot"
+    )$plot +
+          theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = 'black', size = 1),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        plot.title = element_text(size = 15),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        strip.text.x = element_text(size = 10)
+      )
+  })
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_Harmonized_CmasCallsDifferentApproaches.tiff'),
+#   width = 4000,
+#   height = 4000,
+#   res = 400
+#     )
+ggpubr::ggarrange(
+  cms.survival[[1]],
+  cms.survival[[2]],
+  cms.survival[[3]],
+  cms.survival[[4]],
+  cms.survival[[5]]
+  )
+# dev.off()
+```
+
+### pca plots
+
+```{r}
+cms.groups <- c(
+  'cms.cancer.rawCounts',
+  'cms.cancer.fpkm',
+  'cms.cancer.fpkmUq'
+  )
+sapply(
+  c(1:3),
+  function(x){
+    tiff(paste0(
+      coad.fig.path,
+      'TCGA_COAD_Harmonized_PcaPlots',
+      '_PcaOnCancerSamples_ColoredByCMS_',
+      tcga.harmonized[x],
+      '.tiff'),
+      width = 4500,
+      height = 1400,
+      res = 400
+    )
+    pcs <- coad.tcga.stat.summaries$pca.cancer.tcga[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'Time (years)',
+      group = coad.sampleAnnot.cancer[, cms.groups[x]],
+      color = cms.colors,
+      strokeSize = .2,
+      pointSize = 2.5,
+      strokeColor = 'gray30',
+      alpha = .5)
+    do.call(
+      gridExtra::grid.arrange,
+      c(p[1:3],
+        ncol = 3)
+      )
+    dev.off()
+  })
+
+
+## Cancer samples
+# tiff(
+#   paste0(
+#     coad.fig.path,
+#     'TCGA_READ_RUVAdjusted_PcaOnCancerSamplesColoredByCMS.tiff'
+#   ),
+#   width = 4500,
+#   height = 1400,
+#   res = 400
+#   )
+p <- .scatter.density.pc(
+  pcs = coad.ruv.stat.summaries$pca.cancer.ruv$sing.val$u[, 1:3],
+  pc.var = pca.cancer.ruv$var,
+  group.name = 'CMS',
+  group = coad.sampleAnnot.cancer$cms.cancer.ruv,
+  color = cms.colors,
+  strokeSize = .2,
+  pointSize = 3,
+  strokeColor = 'gray30',
+  alpha = .6
+)
+do.call(
+  gridExtra::grid.arrange,
+  c(p[1:3],
+    ncol = 3)
+  )
+# dev.off()
+```
+
+#### within times - cancer samples
+
+```{r }
+coad.sampleAnnot.cancer <- droplevels(coad.sampleAnnot.cancer)
+cms.groups <- c(
+  'cms.cancer.time.points.rawCounts',
+  'cms.cancer.time.points.fpkm',
+  'cms.cancer.time.points.fpkmUq'
+  )
+lapply(
+  1:2,
+  function(x){
+    pcs.time <- coad.tcga.stat.summaries$pca.main.time.cancer.tcga[[x]]
+    index.time <- coad.sampleAnnot.cancer$time.points == levels(coad.sampleAnnot.cancer$time.points)[x]
+    sapply(
+      1:3,
+      function(y){
+        tiff(paste0(
+          coad.fig.path,
+          'TCGA_COAD_Harmonized_PcaPlots_',
+          '_PcaOnCancerSamplesWithinMainTimes_ColoredByCmsOnCancerSamplesPerTimePoints_',
+          tcga.harmonized[y],
+          '_',
+          levels(coad.sampleAnnot.cancer$time.points)[x],
+          '.tiff'),
+          width = 4500,
+          height = 1400,
+          res = 400
+      )
+        pcs <- pcs.time[[y]]
+        p <- .scatter.density.pc(
+          pcs = pcs$sing.val$u[, 1:3],
+          pc.var = pcs$var,
+          group.name = 'CMS',
+          group = coad.sampleAnnot.cancer[, cms.groups[y]][index.time],
+          color = cms.colors,
+          strokeSize = .2,
+          pointSize = 5,
+          strokeColor = 'gray30',
+          alpha = .6)
+        do.call(
+          gridExtra::grid.arrange,
+          c(p[1:3],
+            ncol = 3)
+          )
+        dev.off()
+      })
+  })
+
+### RUV
+major.times <- levels(coad.sampleAnnot.cancer$time.points)
+lapply(
+  c(1:2), 
+  function(y){
+    pcs <- coad.ruv.stat.summaries$pca.cancer.main.times.ruv[[y]]
+    index.cms <- coad.sampleAnnot.cancer$time.points == major.times[y]
+    tiff(
+      paste0(
+        coad.fig.path,
+        'TCGA_READ_Harmonized_PcaPlots_PerTime',
+        'OnCancerSamples_ColoredByCmsOnCancerSamples_',
+        'RUV-III',
+        '_',
+        major.times[y],
+        '.tiff'
+      ),
+      width = 4500,
+      height = 1400,
+      res = 400
+    )
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[, 1:3],
+      pc.var = pcs$var,
+      group.name = 'CMS',
+      group = coad.sampleAnnot.cancer[index.cms, 'cms.cancer.ruv'],
+      color = cms.colors,
+      strokeSize = .2,
+      pointSize = 5,
+      strokeColor = 'gray30',
+      alpha = .6
+    )
+    do.call(gridExtra::grid.arrange,
+            c(p[1] , p[2] , p[3],
+              ncol = 3))
+    dev.off()
+
+  })
+```
+
+## MSI
+### canonical correlation analysis
+
+```{r}
+cca.msi <- data.frame(
+  Raw.counts = coad.tcga.stat.summaries$cca.msi.cancer.tcga$HTseq_counts,
+  FPKM = coad.tcga.stat.summaries$cca.msi.cancer.tcga$HTseq_FPKM,
+  FPKM.UQ = coad.tcga.stat.summaries$cca.msi.cancer.tcga$HTseq_FPKM.UQ,
+  RUV.III = coad.ruv.stat.summaries$cca.msi.cancer.ruv,
+  pcs = c(1:10)
+  )
+cca.msi <- cca.msi %>% 
+  tidyr::pivot_longer(
+    -pcs, 
+    names_to = 'Datasets', 
+    values_to = 'ls') %>% 
+  dplyr::mutate(Datasets = replace(Datasets, Datasets =='Raw.counts', 'Raw counts')) %>% 
+  dplyr::mutate(Datasets = replace(Datasets, Datasets =='RUV.III', 'RUV-III')) %>% 
+  data.frame() 
+  
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_CaaMsiCancer.tiff'),
+#   width = 2400,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(cca.msi, aes(x = pcs, y = ls, group = Datasets)) +
+  geom_line(aes(color = Datasets), size = 1) + 
+  geom_point(aes(color = Datasets), size = 3) + 
+  xlab('PCs') + 
+  ylab (expression("Vector correlation")) +
+  scale_color_manual(
+    values=c(dataSets.colors), 
+    labels = c('Raw counts', 'FPKM','FPKM.UQ', 'RUV-III'),
+    guide = FALSE) +
+  scale_x_continuous(breaks = (1:10), labels = c('PC1', paste0('PC1:', 2:10)) ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 5), limits = c(0,1)) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12,angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### silhouette coefficients
+
+```{r}
+silCoef.msi.cancer <- data.frame(
+  silCoef = c(
+    coad.tcga.stat.summaries$silCoef.msi.cancer.tcga, 
+    coad.ruv.stat.summaries$silCoef.msi.cancer.ruv),
+  Datasets = c('Raw.counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )
+silCoef.msi.cancer$Datasets <- factor(
+  x = silCoef.msi.cancer$Datasets, 
+  levels = c(
+    'Raw.counts',
+    'FPKM', 
+    'FPKM.UQ', 
+    'RUV-III')
+  )
+
+### plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_READ_NormalizatioAssessment_SilhCoefMsi.tiff'),
+#   width = 1200,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(silCoef.msi.cancer, aes(x = Datasets, y = silCoef)) +
+  geom_col() +
+  ylab('Silhouette coefficient') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = 1),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### ari
+
+```{r}
+ari.cms.cancer <- data.frame(
+  ari.index = c(
+    coad.tcga.stat.summaries$ari.cms.cancer.tcga, 
+    coad.ruv.stat.summaries$ari.cms.cancer.ruv),
+  Datasets = c('Raw.counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+  )
+ari.cms.cancer$Datasets <- factor(
+  x = ari.cms.cancer$Datasets, 
+  levels = c(
+    'Raw.counts',
+    'FPKM', 
+    'FPKM.UQ', 
+    'RUV-III')
+  )
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_READ_NormalizatioAssessment_ARICms.tiff'),
+#   width = 1200,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(ari.cms.cancer, aes(x = Datasets, y = ari.index)) +
+  geom_col() +
+  ylab('ARI') +
+  xlab('') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12, angle = 25, hjust = .85),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  )
+# dev.off()
+```
+
+### pca plots
+
+```{r}
+### TCGA
+library(ggplot2)
+library(cowplot)
+### Cancer samples
+sapply(
+  c(1:3),
+  function(x){
+    tiff(paste0(
+      coad.fig.path,
+      'TCGA_COAD_Harmonized_PcaPlots_',
+      'OnCancerSamples_ColoredByMsiOnCancerSamples_',
+      tcga.harmonized[x],
+      '.tiff'),
+      width = 6000,
+      height = 1400,
+      res = 400
+      )
+    pcs <- coad.tcga.stat.summaries$pca.cancer.tcga[[x]]
+    p <- .scatter.density.pc(
+      pcs = pcs$sing.val$u[,1:3],
+      pc.var = pcs$var,
+      group.name = 'MSI',
+      group = coad.sampleAnnot.cancer$msi.status,
+      color = msi.colors,
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .6)
+    do.call(
+      gridExtra::grid.arrange,
+      c(p,
+        ncol = 4)
+      )
+    dev.off()
+  })
+
+### RUV
+# tiff(
+#   paste0(
+#     coad.fig.path,
+#     'TCGA_COAD_RuvAdjusted_PcaPlots_',
+#     'OnCancerSamples_ColoredByMsiOnCancerSamples.tiff'
+#   ),
+#   width = 6000,
+#   height = 1400,
+#   res = 400)
+pcs <-pca.cancer.ruv
+p <- .scatter.density.pc(
+  pcs = pcs$sing.val$u[, 1:3],
+  pc.var = pcs$var,
+  group.name = 'Msi',
+  group = coad.sampleAnnot.cancer$msi.status,
+  color = msi.colors,
+  strokeSize = .2,
+  pointSize = 3,
+  strokeColor = 'gray30',
+  alpha = .6
+)
+do.call(gridExtra::grid.arrange,
+        c(p,
+          ncol = 4))
+# dev.off()
+```
+
+## Issues of using golbal scaling factor
+### library size and uq scale factors
+
+```{r}
+### Library size
+df.ls <- data.frame(
+  ls = coad.sampleAnnot.cancer$ls,
+  sample = c(1:439),
+  year = coad.sampleAnnot.cancer$time.points
+  )
+
+df.ls$ls <-  df.ls$ls/mean(df.ls$ls)
+# plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_ls.tiff'),
+#   width = 2500,
+#   height = 1400,
+#   res = 400
+#   )
+p <- ggplot(df.ls, aes(x = sample, y = ls, color = year)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = major.times.colors) +
+  ylab('Scale factor') +
+  xlab('Samples') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 14),
+    legend.position = 'none'
+  )
+p
+# dev.off()
+
+### Upper-quartile
+uq <- apply(
+  coad.rawCounts.cancer, 
+  2, 
+  function(x) quantile(x, probs = c(.75))
+  )
+uq <- uq/mean(uq)
+df.uq <- data.frame(
+  ls = log2(uq),
+  sample = c(1:439),
+  year = coad.sampleAnnot.cancer$time.points
+  )
+
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_UQ.tiff'),
+#   width = 2500,
+#   height = 1400,
+#   res = 400
+#   )
+p <- ggplot(df.uq, aes(x = sample, y = ls, color = year)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = major.times.colors) +
+  ylab('Scale factor') +
+  xlab('Samples') +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 14),
+    legend.position = 'none'
+  )
+# p
+# dev.off()
+```
+
+### scatter plots of f values for different datasets
+
+```{r}
+### Reading ANOVA results
+ftest.time.fvalue.tcga <- lapply(
+  c(1:3), 
+  function(x){
+    fvalues <- coad.tcga.stat.summaries$ftest.main.time.cancer.tcga[[x]]$FValue
+    fvalues[is.na(fvalues)] <- 0
+    log2(fvalues + 1)
+  })
+names(ftest.time.fvalue.tcga) <- tcga.harmonized
+
+ftest.time.fvalue.ruv <- coad.ruv.stat.summaries$ftest.main.time.cancer.ruv$FValue
+ftest.time.fvalue.ruv[is.na(ftest.time.fvalue.ruv)] <- 0
+
+### Data preparation
+ftest.time.fvalues <- data.frame(
+  Raw.counts = ftest.time.fvalue.tcga$HTseq_counts,
+  FPKM = ftest.time.fvalue.tcga$HTseq_FPKM,
+  FPKM.UQ = ftest.time.fvalue.tcga$HTseq_FPKM.UQ,
+  RUV.III = log2(ftest.time.fvalue.ruv +1) 
+  )  
+
+### Dividing genes into 5 groups
+ftest.time.fvalues$group <- 'group5'
+index.g3 <- ftest.time.fvalues$Raw.counts > 5 & ftest.time.fvalues$FPKM > 5
+ftest.time.fvalues$group[index.g3] <- 'group3'
+index.g4 <- ftest.time.fvalues$Raw.counts <= 3 & ftest.time.fvalues$FPKM > 4
+ftest.time.fvalues$group[index.g4] <- 'group4'
+index.g2 <- ftest.time.fvalues$Raw.counts > 4 & ftest.time.fvalues$FPKM < 5
+ftest.time.fvalues$group[index.g2] <- 'group2'
+index.g1 <- ftest.time.fvalues$Raw.counts > 3 & ftest.time.fvalues$FPKM < 2
+ftest.time.fvalues$group[index.g1] <- 'group1'
+
+
+# m <- stats::kmeans(x = ftest.time.fvalues[, c(1,2)], centers = 8)
+# ftest.time.fvalues$group <- paste0('group', m$cluster)
+
+ftest.time.fvalues <- ftest.time.fvalues %>% 
+  tidyr::pivot_longer(
+    -c(Raw.counts, group) ,
+    values_to = 'Fvalue',
+    names_to = 'Datasets'
+  ) %>% 
+  as.data.frame()
+
+ftest.time.fvalues$Datasets[ftest.time.fvalues$Datasets == 'Raw.counts'] <- 'Raw counts'
+ftest.time.fvalues$Datasets[ftest.time.fvalues$Datasets == 'RUV.III'] <- 'RUV-III'
+
+group.colors <- c(RColorBrewer::brewer.pal(n = 8, 'Dark2')[2:5], 'blue')
+names(group.colors) <- c('group1', 'group2', 'group3', 'group4', 'group5')
+
+# Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_FtestTimeFvalues.tiff'),
+#   width = 4200,
+#   height = 1400,
+#   res = 400
+#   )
+p <- ggplot(ftest.time.fvalues, aes(x = Raw.counts, y = Fvalue, color = group)) +
+  geom_point(alpha = .1) +
+  geom_density_2d(aes(colour = group)) +
+  facet_wrap(~Datasets) + 
+  # ylim(0,10) + xlim(0,10) +
+  scale_color_manual(values = group.colors) +
+  geom_abline(intercept = 0, slope = 1) +
+  ylab(expression(Log[2]~'F statistics')) +
+  xlab(expression(Log[2]~'F statistics (Raw counts)')) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black'),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 18),
+    legend.key = element_blank(),
+  ) +
+  guides(color = guide_legend(
+    title = "Groups", 
+    override.aes = list(size = 3, fill = NA),
+    title.position = "top",     
+    title.theme = element_text(
+      size = 15,
+      colour = "black",
+      angle = 0))
+    )
+p
+# dev.off()
+```
+
+### p-value histogram of anova different datasets
+
+```{r }
+### Data preparation
+ftest.time.pvalue <- data.frame(
+  Raw.counts = coad.tcga.stat.summaries$ftest.main.time.cancer.tcga$HTseq_counts$PValue,
+  FPKM = coad.tcga.stat.summaries$ftest.main.time.cancer.tcga$HTseq_FPKM$PValue,
+  FPKM.UQ = coad.tcga.stat.summaries$ftest.main.time.cancer.tcga$HTseq_FPKM.UQ$PValue,
+  RUV.III = coad.ruv.stat.summaries$ftest.main.time.cancer.ruv$PValue
+  ) %>% 
+  tidyr::pivot_longer(
+    everything(),
+    names_to = 'Datasets',
+    values_to = 'P.value'
+  ) %>% 
+  as.data.frame(.)
+ftest.time.pvalue$Datasets[ftest.time.pvalue$Datasets == 'Raw.counts'] <- 'Raw counts'
+ftest.time.pvalue$Datasets[ftest.time.pvalue$Datasets == 'RUV.III'] <- 'RUV-III'
+ftest.time.pvalue$Datasets <- factor(
+  ftest.time.pvalue$Datasets,
+  levels = c('Raw counts','FPKM', 'FPKM.UQ', 'RUV-III')
+)
+
+### P_value hist
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_READ_NormalizatioAssessment_FtestTimePValues.tiff'),
+#   width = 4200,
+#   height = 1400,
+#   res = 400
+#   )
+ggplot(ftest.time.pvalue, aes(P.value)) +
+  geom_histogram() +
+  facet_wrap(~Datasets, ncol = 4) +
+  xlab('P-values') + ylab('Frequency') +
+    theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black'),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 14)
+  )
+# dev.off()
+```
+
+
+### several examples
+
+```{r}
+### Exterem example
+a <- which(ftest.time.fvalue.tcga$HTseq_counts > 7)
+b <- which(ftest.time.fvalue.tcga$HTseq_FPKM < 2)
+intersect(a , b)
+row.names(coad.rawCounts.cancer)[intersect(a , b)]
+selected.genes <- c(
+  'LARP7',
+  'ALKBH7', 
+  'TMEM160', 
+  'DDX23')
+for(i in selected.genes){
+  df <- data.frame(
+    Raw.counts = log2(coad.rawCounts.cancer[i, ] + 1),
+    FPKM = log2(coad.fpkm.cancer[i , ] + 1 ),
+    FPKM.UQ = log2(coad.fpkmUq.cancer[i , ] + 1),
+    RUV.III = coad.ruv[i ,],
+    samples = c(1:439),
+    time = coad.sampleAnnot.cancer$time.points
+  ) %>% 
+  tidyr::pivot_longer(
+    -c(samples, time),
+    names_to = 'Datasets',
+    values_to = 'Expression'
+  ) %>% 
+  as.data.frame(.)
+  df$Datasets[df$Datasets == 'Raw.counts'] <- 'Raw counts'
+  df$Datasets[df$Datasets == 'RUV.III'] <- 'RUV-III'
+  df$Datasets <- factor(
+    df$Datasets,
+    levels = unique(df$Datasets)
+    )
+  tiff(paste0(
+    coad.fig.path,
+    'TCGA_READ_NormalizatioAssessment_GlobalScaleFactors',
+    i,
+    '.tiff'),
+    width = 6000,
+    height = 1400,
+    res = 400
+  )
+  p <- ggplot(df, aes(x = samples, y = Expression, color = time)) +
+    geom_point(size = 3) +
+    scale_color_manual(values = major.times.colors) +
+    ylab(bquote(Log[2] ~ .(paste0('expression'))))  +
+    xlab('Samples') +
+    ggtitle(i) +
+    facet_wrap( ~ Datasets, scale = 'free', ncol = 4) +
+    theme(
+      panel.background = element_blank(),
+      axis.line = element_line(colour = 'black', size = 1),
+      axis.title.x = element_text(size = 20),
+      axis.title.y = element_text(size = 18),
+      axis.text.x = element_text(size = 14),
+      axis.text.y = element_text(size = 14),
+      plot.title = element_text(size = 22),
+      legend.text = element_text(size = 10),
+      legend.title = element_text(size = 18),
+      strip.text.x = element_text(size = 20),
+      legend.position = 'none'
+    ) +
+    guides(color = guide_legend(title = "Time (years)"))
+  print(p)
+  dev.off()
+  }
+```
+
+### gene expression patterns - several exmaples
+
+```{r}
+row.names(coad.ruv) <- coad.geneAnnot$gene_name.
+selected.genes <- c('CISH', 'BRAF')
+for(gene in selected.genes){
+df <- data.frame(
+  'Raw counts' = log2(coad.rawCounts.cancer[gene , ] +1 ),
+  FPKM = log2(coad.fpkm.cancer[gene , ] +1 ),
+  FPKM.UQ = log2(coad.fpkmUq.cancer[gene , ] +1 ),
+  'RUV-III' = coad.ruv[gene , ],
+  samples = c(1:439),
+  Time = coad.sampleAnnot.cancer$time.points
+  )
+df <- df %>% 
+  tidyr::pivot_longer(
+    -c(samples,Time),
+    names_to = 'Datasets',
+    values_to = 'Expression'
+  ) %>% 
+  as.data.frame(.)
+
+df$Datasets[df$Datasets == 'RUV.III'] <- 'RUV-III'
+df$Datasets[df$Datasets == 'Raw.counts'] <- 'Raw counts'
+
+df$Datasets <- factor(
+  df$Datasets, 
+  levels = 
+    c('Raw counts','FPKM', 'FPKM.UQ', 'RUV-III')
+  )
+
+### Plot
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_ExprOf', gene, '.tiff'),
+#   width = 3600,
+#   height = 900,
+#   res = 400
+#   )
+p <- ggplot(df, aes(x = samples, y = Expression, color = Time)) +
+  geom_point(size = 1) +
+  stat_mean_line(color = "black", linetype = "dashed") +
+  facet_wrap(~Datasets, scale = 'free', ncol = 4) +
+  scale_color_manual(values = major.times.colors) +
+  ylab(expression(Log[2]~'expression')) +
+  ggtitle(gene) +
+  xlab('Samples') +
+    theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = .6),
+    axis.title.x = element_text(size =10),
+    axis.title.y = element_text(size = 14),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10)
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 3, title="Time (years)") ) )
+print(p)
+# dev.off()
+}
+```
+
+### surivival plots - several examples
+
+```{r}
+### TCGA
+row.names(coad.ruv) <- coad.geneAnnot$gene_name.
+selected.genes <- c('CISH', 'BRAF')
+coad.ruv <- ruviii.norm.spb
+row.names(coad.ruv) <- coad.geneAnnot$gene_name.
+gene <- 'BRAF'
+
+data.sets.tcga <- c(
+  'coad.rawCounts.cancer', 
+  'coad.fpkm.cancer', 
+  'coad.fpkmUq.cancer', 
+  'coad.ruv'
+  )
+surGene <- lapply(
+  data.sets.tcga, 
+  function(x){
+    if(x != 'read.ruv'){
+      expr.data <- get(x)
+      expr.data <- expr.data
+    }else{
+      expr.data <- get(x)
+    }
+    p <- survival_plot(
+      data = expr.data,
+      stratify = 'expr',
+      annot = coad.sampleAnnot.cancer,
+      scoreCol =  NULL,
+      gene = gene,
+      covariate = NULL,
+      isCategoricalCov = FALSE,
+      timeCol = "OS.time_liu",
+      eventCol = "OS_liu",
+      nGroup = 2,
+      mainTitle1 = gene,
+      confInt = FALSE,
+      ylabel = "Survival",
+      cols = c(
+        brewer.pal(9, "Set1")[c(2, 3, 4, 5, 7, 8)],
+        brewer.pal(8, "Dark2")[c(8, 1, 4, 6)]),
+      nColLegend = 1,
+      plotType = "autoplot")
+    return(p$plot +         theme(
+        panel.background = element_blank(),
+        axis.line = element_line(colour = 'black', size = 1),
+        axis.title.x = element_text(size = 18),
+        axis.title.y = element_text(size = 18),
+        plot.title = element_text(size = 15),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 14),
+        strip.text.x = element_text(size = 10)
+      ))
+  })
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_Survival_', gene, '.tiff'),
+#   width = 6000,
+#   height = 1500,
+#   res = 400
+#   )
+do.call(gridExtra::grid.arrange, c(surGene , ncol = 4))
+# dev.off()
+
+### micro array
+p <- survival_plot(
+      data = coad.micro.array,
+      stratify = 'expr',
+      annot = coad.micro.array.sampleAnnot,
+      scoreCol =  NULL,
+      gene = gene,
+      covariate = NULL,
+      isCategoricalCov = FALSE,
+      timeCol = "OS.time_liu",
+      eventCol = "OS_liu",
+      nGroup = 2,
+      confInt = FALSE,
+      mainTitle1 = gene,
+      ylabel = "Survival",
+      cols = c(
+        brewer.pal(9, "Set1")[c(2, 3, 4, 5, 7, 8)],
+        brewer.pal(8, "Dark2")[c(8, 1, 4, 6)]),
+      nColLegend = 1,
+      plotType = "autoplot")
+# 
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_Survival_MicroArray', gene, '.tiff'),
+#   width = 1500,
+#   height = 1500,
+#   res = 400
+#   )
+p$plot
+# dev.off()
+```
+
+## Artifactual gene co-expression from library size
+### correlation heatmap of highly affected genes by major times
+
+```{r}
+coad.fpkmUq.cancer <- SummarizedExperiment::assay(
+  coad.se.cancer, 
+  'HTseq_FPKM.UQ'
+  )
+### 
+ftest.time.fvalue.tcga.fpkm.uq <- coad.tcga.stat.summaries$ftest.main.time.cancer.tcga$HTseq_FPKM.UQ$FValue
+ftest.time.fvalue.tcga.fpkm.uq[is.na(ftest.time.fvalue.tcga.fpkm.uq)] <- 0
+corr.genes <- log2(ftest.time.fvalue.tcga.fpkm.uq + 1)  > 6
+sum(corr.genes) # 305
+
+### correlation between genes and library size in TCGA FPKM.UQ
+gene.ls.corr.tcga <- apply(
+  coad.fpkmUq.cancer[corr.genes , ], 
+  1, 
+  function(x){
+    cor.test(
+      x, 
+      coad.sampleAnnot.cancer$ls,
+      method = 'spearman')[[4]]
+  })
+
+
+### Correlation matrix of all 500 genes in TCGA FPKM.UQ
+cor.matrix.tcga <- cor(t(coad.fpkmUq.cancer[corr.genes , ]), method = 'spearman')
+
+### corrlation heat map
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_Heatmap_CorrelationMatrix_HighlyAffectedGenes_FPKM.UQ.tiff'),
+#   width = 2000,
+#   height = 2000,
+#   res = 400
+#   )
+col_fun = circlize::colorRamp2(c(-0.8, 0, 0.8), c("navy", "white", "yellow3"))
+ha.annot.tcag = ComplexHeatmap::HeatmapAnnotation(
+  foo = gene.ls.corr.tcga, 
+  col = list(foo = col_fun), 
+  show_legend = FALSE,
+  show_annotation_name = FALSE)
+p.corr.heatmap <- ComplexHeatmap::Heatmap(
+  cor.matrix.tcga, 
+  col = rev(RColorBrewer::brewer.pal(n = 11, name = 'BrBG')),
+  show_row_names = FALSE, 
+  show_column_names = FALSE,
+  top_annotation = ha.annot.tcag,
+  show_column_dend = FALSE,
+  show_row_dend = FALSE,
+  show_heatmap_legend = FALSE,
+  cluster_rows = TRUE,
+  cluster_columns = TRUE
+  )
+p.corr.heatmap
+# dev.off()
+order.rows <- ComplexHeatmap::row_order(p.corr.heatmap)
+order.cols <- ComplexHeatmap::column_order(p.corr.heatmap)
+all.equal(names(order.rows), names(order.cols))
+
+### RUV
+ls.ruv <- apply(
+  coad.ruv[corr.genes , ], 
+  1, 
+  function(x){
+    cor.test(
+      x, 
+      coad.sampleAnnot.cancer$ls,
+      method = 'spearman')[[4]]
+  })
+ls.ruv <- ls.ruv[order.rows]
+cor.heatmap.ruv <- cor(t(coad.ruv[corr.genes , ]), method = 'spearman')
+cor.heatmap.ruv <- cor.heatmap.ruv[order.rows , order.rows]
+
+# tiff(paste0(
+#   coad.fig.path,
+#   'TCGA_COAD_NormalizatioAssessment_Heatmap_CorrelationMatrix_HighlyAffectedGenes_RUV.tiff'),
+#   width = 2000,
+#   height = 2000,
+#   res = 400
+#   )
+col_fun = circlize::colorRamp2(
+  c(-0.8, 0, 0.8), 
+  c("navy", "white", "yellow3")
+  )
+ha.annot.ruv = ComplexHeatmap::HeatmapAnnotation(
+  foo = ls.ruv, 
+  col = list(foo = col_fun ), 
+  show_legend = FALSE,
+  show_annotation_name = FALSE)
+ComplexHeatmap::Heatmap(
+  cor.heatmap.ruv, 
+  col = rev(RColorBrewer::brewer.pal(n = 11, name = 'BrBG')),
+  show_row_names = FALSE, 
+  show_column_names = FALSE,
+  top_annotation = ha.annot.ruv,
+  show_column_dend = FALSE,
+  show_row_dend = FALSE,
+  show_heatmap_legend = FALSE,
+  cluster_rows = F,
+  cluster_columns = F
+  
+  )
+# dev.off()
+```
+
+### several examples
+
+```{r}
+coad.fpkmUq.cancer <- SummarizedExperiment::assay(
+  coad.se.cancer, 
+  'HTseq_FPKM.UQ'
+  )
+coad.fpkm.cancer <- SummarizedExperiment::assay(
+  coad.se.cancer, 
+  'HTseq_FPKM'
+  )
+coad.rawCounts.cancer <- SummarizedExperiment::assay(
+  coad.se.cancer, 
+  'HTseq_counts'
+  )
+all.equal(
+  colnames(coad.fpkmUq), 
+  coad.sampleAnnot$Sample
+  )
+coad.geneAnnot <- as.data.frame(SummarizedExperiment::rowData(coad.se.cancer))
+row.names(coad.ruv) <- coad.geneAnnot$gene_name.
+
+keep <- coad.ruv[ 'SCAND1', ] > 9.5
+
+genes.x <- c('SCAND1', 'C19orf52', 'STARD10', 'ADAT3', 'PPP4C')
+genes.y <- c('PFDN4', 'MRPS34', 'SLC39A3', 'MRPS34', 'CCAR1')
+
+coad.rawCounts.cancer <- log2(coad.rawCounts.cancer[ , ] + 1)
+coad.fpkm.cancer <- log2(coad.fpkm.cancer[ , ] + 1)
+coad.fpkmUq.cancer <- log2(coad.fpkmUq.cancer[ , ] + 1)
+data.sets.tcga <- c(
+  'coad.rawCounts.cancer', 
+  'coad.fpkm.cancer', 
+  'coad.fpkmUq.cancer', 
+  'coad.ruv')
+
+dataset.names <- c('Raw counts', 'FPKM', 'FPKM.UQ', 'RUV-III')
+
+for(i in 1:5){
+    g1 <- genes.x[i]
+    g2 <- genes.y[i]
+  tiff(paste0(
+    coad.fig.path,
+    'TCGA_COAD_NormalizatioAssessment_CorrelationGenesL.',
+    g1, '_', g2, '.tiff'),
+    width = 6000,
+    height = 1400,
+    res = 400
+  )
+  p.all <- lapply(
+    c(1:4),
+    function(x){
+      if(x == 1){
+        df <- get(data.sets.tcga[x])
+        df <- data.frame( 
+          gene1 = df[g1 , keep],
+          gene2 = df[g2 , keep],
+          time = coad.sampleAnnot.cancer$time.points[keep]
+        )
+      p <- ggplot(df, aes(x = gene1, y = gene2, color = time)) +
+        geom_point(pch = 19, size = 2) +
+        scale_color_manual(values = major.times.colors) +
+        xlab(bquote(Log[2] ~ .(paste0('expression ', g1)))) +
+        ylab(bquote(Log[2] ~ .(paste0('expression ', g2)))) +
+        ggtitle(dataset.names[x]) + 
+        ggpubr::stat_cor( 
+          aes(color = time, label = ..r.label..),
+          method = "spearman" ,
+          label.x.npc = .67,
+          label.y.npc = .2,
+          hjust = 0,
+          r.accuracy = 0.1,
+          size = 7,
+          cor.coef.name = "rho"
+        ) +
+        geom_smooth(
+          method = 'lm',
+          formula = y ~ x,
+          col = 'red',
+          se = FALSE
+        ) +
+        geom_smooth(
+          aes(group = time),
+          method = 'lm',
+          formula = y ~ x,
+          se = FALSE) +
+        ggpubr::stat_cor(
+          aes(label = ..r.label..),
+          label.x.npc = .67,
+          label.y.npc = .33,
+          hjust = 0,
+          size = 7,
+          r.accuracy = 0.1,
+          col = 'red',
+          cor.coef.name = "rho"
+        )  +
+        theme(
+          panel.background = element_blank(),
+          plot.title = element_text(size = 22), 
+          axis.line = element_line(colour = 'black', size = 1),
+          axis.title.x = element_text(size = 16),
+          axis.title.y = element_text(size = 18),
+          axis.text.x = element_text(size = 14),
+          axis.text.y = element_text(size = 14),
+          legend.text = element_text(size = 10),
+          legend.title = element_text(size = 14),
+          strip.text.x = element_text(size = 14),
+          legend.position = 'none'
+        ) +
+        guides(color = guide_legend(override.aes = list(size = 1)))
+      p
+        }else{
+          df <- get(data.sets.tcga[x])
+          df <- data.frame(
+            gene1 = df[g1 , keep],
+            gene2 = df[g2 , keep],
+            time = coad.sampleAnnot.cancer$time.points[keep]
+          )
+          p <- ggplot(df, aes(x = gene1, y = gene2, color = time)) +
+            geom_point(pch = 19, size = 2) +
+            ylab('') +
+            xlab('') +
+            ggtitle(dataset.names[x]) + 
+            scale_color_manual(values = major.times.colors) +
+            ggpubr::stat_cor(
+              aes(color = time, label = ..r.label..),
+              method = "spearman" ,
+              label.x.npc = .67,
+              label.y.npc = .2,
+              hjust = 0,
+              size = 7,
+              r.accuracy = 0.1,
+              cor.coef.name = "rho"
+            ) +
+            geom_smooth(
+              method = 'lm',
+              formula = y ~ x,
+              col = 'red',
+              se = FALSE
+            ) +
+            geom_smooth(aes(group = time),
+                        method = 'lm',
+                        formula = y ~ x,
+                        se = FALSE) +
+            ggpubr::stat_cor(
+              aes(label = ..r.label..),
+              label.x.npc = .67,
+              label.y.npc = .33,
+              hjust = 0,
+              size = 7,
+              col = 'red',
+              r.accuracy = 0.1,
+              cor.coef.name = "rho"
+            )  +
+            theme(
+              panel.background = element_blank(),
+              plot.title = element_text(size = 22), 
+              axis.line = element_line(colour = 'black', size = 1),
+              axis.title.x = element_text(size = 16),
+              axis.title.y = element_text(size = 18),
+              axis.text.x = element_text(size = 14),
+              axis.text.y = element_text(size = 14),
+              legend.text = element_text(size = 10),
+              legend.title = element_text(size = 14),
+              strip.text.x = element_text(size = 14),
+              legend.position = 'none'
+            ) +
+            guides(color = guide_legend(override.aes = list(size = 1)))
+          p
+        }
+    })
+  do.call(
+    gridExtra::grid.arrange, 
+    c(p.all, ncol = 4))
+  dev.off()
+  graphics.off()
+}
+
+### TCGA microarray data
+
+genes.x <- c('SCAND1', 'C19orf52', 'STARD10', 'ADAT3', 'PPP4C') 
+genes.y <- c('PFDN4', 'MRPS34', 'SLC39A3', 'MRPS34', 'CCAR1')
+
+keep <- which(read.micro.array['ADAT3' , ] > -.2)
+
+for(i in c(1,4,5)){
+  g1 <- genes.x[i]
+  g2 <- genes.y[i]
+  tiff(
+    paste0(coad.fig.path,
+      'TCGA_READ_NormalizatioAssessment_CorrelationGenes_TCGAMicroArrayL.',
+      g1, '_', g2,'.tiff'),
+    width = 1500,
+    height = 1400,
+    res = 400
+  )
+  df <- data.frame(
+    gene1 = coad.micro.array[g1 , ],
+    gene2 = coad.micro.array[g2 , ]
+  )
+  p <- ggplot(df, aes(x = gene1, y = gene2)) +
+    geom_point(pch = 19, size = 2) +
+    ylab('') +
+    xlab('') +
+    ggtitle('Microarray') +
+    geom_smooth(
+      method = 'lm',
+      formula = y ~ x,
+      col = 'red',
+      se = FALSE
+    ) +
+    ggpubr::stat_cor(
+      aes(label = ..r.label..),
+      label.x.npc = .67,
+      label.y.npc = .13,
+      hjust = 0,
+      size = 7,
+      col = 'red',
+      r.accuracy = 0.1,
+      cor.coef.name = "rho"
+    )  +
+    theme(
+      panel.background = element_blank(),
+      plot.title = element_text(size = 22), 
+      axis.line = element_line(colour = 'black', size = 1),
+      axis.title.x = element_text(size = 16),
+      axis.title.y = element_text(size = 18),
+      axis.text.x = element_text(size = 14),
+      axis.text.y = element_text(size = 14),
+      legend.text = element_text(size = 10),
+      legend.title = element_text(size = 14),
+      strip.text.x = element_text(size = 14),
+      legend.position = 'none'
+    ) +
+    guides(color = guide_legend(override.aes = list(size = 1)))
+  print(p)
+  dev.off()
+}
+```
+
+## PrPs Visualization
+### Library size
+
+```{r}
+pca.ncg <- .pca(
+  data = read.rawCounts[negative.controlGenes , index.cancer], 
+  is.log = FALSE
+  )
+pcs.ls <- data.frame(
+  PC1 = pca.ncg$sing.val$u[,1],
+  PC2 = pca.ncg$sing.val$u[,2],
+  PC3 = pca.ncg$sing.val$u[,3],
+  ls = read.sampleAnnot$ls[index.cancer]
+  )
+pcs.ls <- pcs.ls %>% 
+  tidyr::pivot_longer(
+    -ls, names_to = 'PCs', 
+    values_to = 'pc') %>% 
+  data.frame(.)
+tiff(
+  paste0(
+    read.data.path,
+    'TCGA_READ_RawCounts_PcaOnNcg_PcaLibrarySize.tiff'
+  ),
+  width = 4500, 
+  height = 1500,
+  res = 400)
+ggplot(pcs.ls, aes( x = ls, y = pc)) +
+  geom_point(color = 'gray50', size = 2) +
+  xlab(expression(Log[2]~ 'library size')) +
+  ylab('PC') +
+  facet_wrap( ~ PCs) +
+  theme(
+    panel.background = element_blank(),
+    axis.line = element_line(colour = 'black', size = 1),
+    axis.title.x = element_text(size = 16),
+    axis.title.y = element_text(size = 18),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    legend.text = element_text(size = 10),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 18),
+    legend.position = 'none'
+  )
+dev.off()
+
+```
+
+### PCA on NCG
+
+```{r}
+# tiff(paste0(
+#     read.data.path,
+#     'TCGA_READ_RawCounts_PcaOnNcg_ColoredByYears.tiff'
+#   ),
+#   width = 4500, 
+#   height = 1400,
+#   res = 400)
+p <- .scatter.density.pc(
+  pcs = pca.ncg$sing.val$u[, 1:3],
+  pc.var = pca.ncg$var,
+  group.name = 'Time (years)',
+  group = coad.sampleAnnot.cancer$time.points,
+  color = timePoints.colors,
+  strokeSize = .2,
+  pointSize = 3,
+  strokeColor = 'gray30',
+  alpha = .5
+  )
+do.call(
+  grid.arrange, 
+  c(p[1:3], ncol = 3)
+  )
+# dev.off()
+
+p <- .scatter.density.pc(
+  pcs = pca.ncg$sing.val$u[, 1:3],
+  pc.var = pca.ncg$var,
+  group.name = 'CMS subtypes',
+  group = coad.sampleAnnot.cancer$cms.cancer.fpkmUq,
+  color = cms.colors,
+  strokeSize = .2,
+  pointSize = 3,
+  strokeColor = 'gray30',
+  alpha = .5
+  )
+# tiff(
+#   paste0(
+#     read.data.path,
+#     'TCGA_READ_RawCounts_PcaOnNcg_ColoredCms.tiff'
+#   ),
+#   width = 4500, 
+#   height = 1400,
+#   res = 400
+#   )
+do.call(
+  grid.arrange, 
+  c(p[1:3], ncol = 3)
+  )
+# dev.off()
+```
+
+# RUV-III normalization for READ RNAseq
+## negative control genes
+
+```{r}
+coad.fpkmUq <- SummarizedExperiment::assay(
+  coad.se, 
+  'HTseq_FPKM.UQ'
+  )
+coad.rawCounts <- SummarizedExperiment::assay(
+  coad.se, 
+  'HTseq_counts'
+  )
+coad.rawCounts.cancer <- SummarizedExperiment::assay(
+  coad.se.cancer, 
+  'HTseq_counts'
+  )
+all.equal(
+  colnames(coad.fpkmUq), 
+  coad.sampleAnnot$Sample
+  )
+coad.geneAnnot <- as.data.frame(SummarizedExperiment::rowData(coad.se))
+```
+
+### anova between cms
+
+```{r}
+coad.sampleAnnot$cms.use <- 'no'
+a <- as.character(coad.sampleAnnot$cms.cancer.fpkmUq)
+b <- as.character(coad.sampleAnnot$cms.cancer.time.points.fpkmUq)
+coad.sampleAnnot$cms.use[a==b] <- 'yes'
+
+### Data and gene annot
+index.sample.use <- coad.sampleAnnot$cms.cancer.fpkmUq!='Not classified' &
+  coad.sampleAnnot$cms.cancer.fpkmUq!='Adjacent normal' &
+  coad.sampleAnnot$cms.use == 'yes' 
+
+## Ftest cms
+ftest.cms <- .Ftest(
+  data = coad.fpkmUq[, index.sample.use],
+  variable = droplevels(coad.sampleAnnot$cms.cancer.fpkmUq[index.sample.use]),
+  is.log = FALSE,
+  n.cores = 11)
+ftest.cms$FValue[is.na(ftest.cms$FValue)] <- mean(ftest.cms$FValue, na.rm = T)
+coad.geneAnnot$cmsDE.genes <- rank(ftest.cms$FValue)
+plot(coad.geneAnnot$msiDE.genes, ftest.msi$FValue)
+```
+
+### anova between msi
+
+```{r}
+### Data and gene annot
+index.sample.use <- coad.sampleAnnot$msi.status!='Indeterminate' &
+  coad.sampleAnnot$cms.cancer.fpkmUq!='Adjacent normal' 
+
+## Ftest cms
+ftest.msi <- .Ftest(
+  data = coad.fpkmUq[, index.sample.use],
+  variable = droplevels(coad.sampleAnnot$msi.status[index.sample.use]),
+  is.log = FALSE,
+  n.cores = 11)
+ftest.cms$FValue[is.na(ftest.msi$FValue)] <- mean(ftest.msi$FValue, na.rm = T)
+coad.geneAnnot$msiDE.genes <- rank(ftest.msi$FValue)
+```
+
+### corr with sing scores HK
+
+```{r }
+sing.scor.hk <- coad.geneAnnot$sinscore.hk == 'yes'
+sing.scor.hk.ave <- log2(colMeans(coad.rawCounts.cancer[sing.scor.hk , ]))
+corr.sing.scor.hk <- .corr.gene.variable(
+  expr.data = coad.rawCounts.cancer, 
+  is.log = FALSE, 
+  variable = sing.scor.hk.ave, 
+  method = 'spearman', 
+  n.cores = 11, 
+  group = 'hk'
+  )
+corr.sing.scor.hk$hk_rho[is.na(corr.sing.scor.hk$hk_rho)] <- mean(
+  corr.sing.scor.hk$hk_rho, 
+  na.rm = TRUE
+  )
+coad.geneAnnot$sinscore.hk.corr <- corr.sing.scor.hk$hk_rho
+```
+
+### corr with purity
+
+```{r }
+corr.purity <- .corr.gene.variable(
+  expr.data = coad.rawCounts.cancer, 
+  is.log = FALSE, 
+  variable = coad.sampleAnnot.cancer$purity_HTseq_FPKM.UQ, 
+  method = 'spearman', 
+  n.cores = 11, 
+  group = 'hk'
+  )
+corr.purity$hk_rho[is.na(corr.purity$hk_rho)] <- mean(
+  corr.purity$hk_rho, 
+  na.rm = TRUE
+  )
+coad.geneAnnot$corr.gene.purity <- corr.purity$hk_rho
+```
+
+### puting all togather
+
+```{r}
+negative.control.genes <- 
+  coad.geneAnnot$sinscore.hk.corr > .9 &
+  abs(coad.geneAnnot$corr.gene.purity) < .3 &
+  coad.geneAnnot$cms.genes == 'no'
+sum(negative.control.genes) # 262
+```
+
+### pca negative control genes
+
+```{r}
+pca.tcag.rawCounts.ncg.cancer <- .pca(
+  data = coad.rawCounts.cancer[negative.control.genes , ], 
+  is.log = FALSE
+  )
+cols <- c(
+  'cms.cancer.time.points.fpkmUq',
+  'time.points'
+  )
+
+name.cols <- c('CMS', 'Time (years)')
+colors <- c('cms.colors', 'major.times.colors')
+lapply(
+  c(1:2), 
+  function(x){
+    tiff(
+      paste0(
+        coad.fig.path,
+        'TCGA_COAD_NCG_PCA_OnRawCountsColouredBy',
+        name.cols[x],
+        '.tiff'
+      ),
+      width = 6000,
+      height = 1400,
+      res = 400
+    )
+    p <- .scatter.density.pc(
+      pcs = pca.tcag.rawCounts.ncg.cancer$sing.val$u[, 1:3],
+      pc.var = pca.tcag.rawCounts.ncg.cancer$variation,
+      group.name = name.cols[x],
+      group = coad.sampleAnnot.cancer[ , cols[x]],
+      color = base::get(colors[x]),
+      strokeSize = .2,
+      pointSize = 3,
+      strokeColor = 'gray30',
+      alpha = .6
+    )
+    do.call(gridExtra::grid.arrange,
+            c(p,
+              ncol = 4))
+    dev.off()
+  })
+```
+
+## prps
+### prps creation
+
+```{r}
+### Cancer samples
+### Cancer samples
+coad.sampleAnnot$cms.use <- 'no'
+a <- as.character(coad.sampleAnnot$cms.cancer.fpkmUq)
+b <- as.character(coad.sampleAnnot$cms.cancer.time.points.fpkmUq)
+coad.sampleAnnot$cms.use[a==b] <- 'yes'
+
+index.cms.msi <- coad.sampleAnnot$cms.cancer.time.points.fpkmUq != 'Adjacent normal' &
+  coad.sampleAnnot$cms.cancer.time.points.fpkmUq != 'Not classified' &
+  coad.sampleAnnot$msi.status != 'Indeterminate' 
+sum(index.cms.msi) # 406
+all.equal(colnames(coad.rawCounts), coad.sampleAnnot$Sample)
+sample.info.cms.msi <- droplevels(coad.sampleAnnot[ index.cms.msi, ])
+counts.cms.msi <- coad.rawCounts[ , index.cms.msi]
+all.equal(
+  colnames(counts.cms.msi),
+  sample.info.cms.msi$Sample
+  )
+
+### Possible combinations
+sample.info.cms.msi$biology <- paste0(
+  sample.info.cms.msi$cms.cancer.time.points.fpkmUq,
+  '_',
+  sample.info.cms.msi$msi.status
+  )
+sample.info.cms.msi$biology <- factor(
+  x = sample.info.cms.msi$biology,
+  levels = c(names(table(sample.info.cms.msi$biology )))
+  )
+
+### Creating PRPS
+ps.cms.msi.plate.cancer <- vector()
+for(i in levels(sample.info.cms.msi$biology)){
+  index <- sample.info.cms.msi$biology == i
+  info <- droplevels(sample.info.cms.msi[ index, ])
+  expr.data <- counts.cms.msi[ , index ]
+  batch.samples <- table(info$PlateId_mda)
+  selected.batch <- names(which(batch.samples >= 3))
+  if(length(selected.batch) > 1){
+    rep <- .CreatePseudoSamples(
+      raw.counts = expr.data,
+      sample.annot = info,
+      bio = i,
+      batch = 'PlateId_mda',
+      n.samples = 3,
+      method = 'average'
+      )
+    ps.cms.msi.plate.cancer <- cbind(
+      ps.cms.msi.plate.cancer,
+      rep$ps.rep
+      )
+  }
+  else{
+    (print('NA'))
+  }
+}
+dim(ps.cms.msi.plate.cancer) # 16151  47
+```
+
+### prps visualizations
+
+```{r}
+### Make names out of plate ans years
+ps.samples <- base::strsplit(
+  x = colnames(ps.cms.msi.plate.cancer), 
+  split = '_'
+  )
+plates <- sapply(
+  ps.samples, 
+  function(x) x[4]
+  )
+time.years <- vector()
+for(i in 1:length(plates)){
+  index <- grep(plates[i], coad.sampleAnnot$plate_RNAseq)
+  year <- unique(coad.sampleAnnot$year_mda[index])
+  time.years <- c(time.years, year)
+}
+colnames(ps.cms.msi.plate.cancer) <- paste(
+  colnames(ps.cms.msi.plate.cancer),
+  time.years,
+  sep = '_'
+)
+
+###
+samples <- colnames(ps.cms.msi.plate.cancer)
+samples <- strsplit(
+  x = colnames(ps.cms.msi.plate.cancer), 
+  split = '_'
+  )
+cms.msi <- sapply(
+  samples, 
+  function(x) paste(x[2], x[3], sep = '_')
+  )
+year.plate <- sapply(
+  samples, 
+  function(x) paste(x[5], x[4], sep = '_')
+  )
+ps <- data.frame(
+  bio = cms.msi, 
+  year.plate = year.plate, 
+  ls = log2(colSums(ps.cms.msi.plate.cancer))
+  )
+
+tiff(paste0(
+  coad.fig.path,
+  'TCGA_COAD_PRPS_LibrarySizeAcrossPlateYear.tiff'),
+  width = 3000,
+  height = 5500,
+  res = 400
+  )
+ggplot(ps, aes(x = year.plate, y = ls))  +
+  geom_point(size = 3) +
+  geom_line(aes(x = as.numeric(as.factor(year.plate)), y = ls)) +
+  xlab('Years_plates') + 
+  ylab(expression(Log[2]~'library size')) +
+  facet_grid(bio ~.) +
+  theme(
+    axis.text.x = element_text(size = 15, angle = 35, hjust = 1),
+    axis.text.y = element_text(size = 13),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20),
+    strip.text.y = element_text(size = 20)
+    )
+dev.off()
+
+### PRPS map
+# Sample to use for PS
+samples.to.use <- coad.sampleAnnot$cms.cancer.time.points.fpkmUq != 'Adjacent normal' &
+  coad.sampleAnnot$cms.cancer.time.points.fpkmUq != 'Not classified' &
+  coad.sampleAnnot$msi.status != 'Indeterminate' 
+sum(samples.to.use)
+ps.sample.info <- droplevels(coad.sampleAnnot[ samples.to.use, ])
+
+new.info <- ps.sample.info
+new.info$new.batch <- paste0(
+  new.info$year_mda,
+  '_',
+  new.info$PlateId_mda
+  )
+new.info$biololy <- paste0(
+  new.info$cms.cancer.time.points.fpkmUq, 
+  '_',
+  new.info$msi.status)
+
+library(tidyverse)
+df_count <- new.info %>%
+    dplyr::count(new.batch, biololy)
+df_count$use <- 'Unselected'
+df_count$use[df_count$n > 2] <- 'Selected'
+
+tiff(paste0(
+  coad.fig.path,
+  'TCGA_COAD_PRPS_Map.tiff'),
+  width = 2500,
+  height = 2500,
+  res = 400
+  )
+ggplot(df_count, aes(x = new.batch, y = biololy)) +
+  geom_count(aes(color = use)) +
+  geom_text(aes(
+    label = n,
+    hjust = 0.5,
+    vjust = 0.5
+  )) +
+  xlab('Years-plates') +
+  ylab('Biological groups') +
+  theme_bw()+
+  theme(
+    axis.line = element_line(colour = 'black', size = .85),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    plot.title = element_text(size = 15),
+    axis.text.x = element_text(
+      size = 12,
+      angle = 45,
+      hjust = 1
+    ),
+    axis.text.y = element_text(size = 12),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 14),
+    strip.text.x = element_text(size = 10),
+    legend.position = 'none'
+  )
+dev.off()  
+```
+
+## ruv-iii normalization
+
+```{r}
+### prps
+colnames(ps.cms.msi.plate.cancer) <- paste0(
+  lapply(
+  colnames(ps.cms.msi.plate.cancer),
+  function(x){
+    unlist(strsplit(x, '[_]'))[2]
+  }),
+  lapply(
+  colnames(ps.cms.msi.plate.cancer),
+  function(x){
+    unlist(strsplit(x, '[_]'))[3]
+  })
+  )
+table(colnames(ps.cms.msi.plate.cancer))
+# CMS1MSI-H CMS2MSI-L   CMS2MSS   CMS3MSS CMS4MSI-L   CMS4MSS 
+#         7         4        16         5         6         9 
+
+### ruv input data
+coad.rawCounts.ps <- cbind(
+  coad.rawCounts.cancer,
+  ps.cms.msi.plate.cancer
+  ) 
+dim(coad.rawCounts.ps) # 16151   486
+
+### replicate matrix
+rep.matrix.coad <- ruv::replicate.matrix(
+  colnames(coad.rawCounts.ps)
+  )
+dim(rep.matrix.coad) # 486 445
+
+ruviii.norm <- RUV_III_PRPS(
+  Y = t(log2(coad.rawCounts.ps + 1)),
+  M = rep.matrix.coad,
+  ctl = negative.control.genes,
+  k = 11,
+  eta = NULL,
+  return.info = TRUE)
+```
+
+## svaing all ruv
+
+```{r}
+ruv.normalization <- list(
+  ruv.data.input = t(log2(coad.rawCounts.ps + 1)),
+  M = rep.matrix.coad,
+  ncg = negative.control.genes,
+  k = 11,
+  raw.ps.data = ps.cms.msi.plate.cancer,
+  ruviii = ruviii.norm,
+  ruviii.spb = ruviii.norm.spb
+  )
+saveRDS(
+  object = ruv.normalization,
+  file = paste0(
+    coad.data.path,
+    'TCGA_COAD_AllRuvs_FprPaper.rds')
+  )
+```
