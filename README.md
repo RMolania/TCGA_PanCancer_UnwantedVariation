@@ -10,10 +10,19 @@ Data availability:\
 We have created a Summarized experiment objects contacting expression data (raw counts, FPKM and FPKM.UQ), clinical and batch information, and gene annotations for all the TCGA RNA-Seq data. These files are deposited here (https://zenodo.org/record/6326542#.YlN56y8Rquo). The datasets that are required for the vignettes can be found here (https://zenodo.org/record/6392171#.YlN6Yi8Rquo). The RUV-III normalized data of the TCGA READ, COAD and BRCA RNA-Seq datasets are deposited (https://zenodo.org/record/6459560#.YldJ4S8Rquo). The TCGA gene expression microarray data was obtained from (https://gdac.broadinstitute.org), data version 2016/01/28. The breast cancer laser captured microdissected microarray and RNA-seq datasets were downloaded from the NCBI Gene Expression Omnibus with accession number GSE78958, GSE96058 and GSE81538. 
 
 
-Vigettes:\
+Vignettes:
 
 [The TCGA READ RNA-seq data](https://htmlpreview.github.io/?https://github.com/RMolania/TCGA_PanCancer_UnwantedVariation/blob/master/Vigettes/TCGA_READ_RNAseq_Vignette.html)
-[The TCGA BRCA RNA-seq data]()
+
+
+Vignettes:
+
+[The TCGA BRCA RNA-seq data](https://htmlpreview.github.io/?https://github.com/RMolania/TCGA_PanCancer_UnwantedVariation/blob/master/Vigettes/TCGA_BRCA_RNAseq_Vignette.html)
+
+
+Vignettes:
+
+
 [The tcgaCleaneR package]()
 
 Please email molania.r@wehi.edu.au if you have any questions.
