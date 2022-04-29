@@ -6,7 +6,28 @@ author:
   url: https://www.wehi.edu.au/people/tony-papenfuss
 date: "15-02-2020"
 output: github_document
+  rmdformats::readthedown:
+    code_folding: show
+    gallery: yes
+    highlight: tango
+    lightbox: yes
+    self_contained: yes
+    thumbnails: no
+    number_sections: yes
+    toc_depth: 3
+    use_bookdown: yes
+    output: github_document
+  html_document2:
+    df_print: paged
+  html_document:
+    toc_depth: '3'
+    df_print: paged
+params:
+  update_date: !r paste("Last updated on:", Sys.Date())
+editor_options:
+  chunk_output_type: console
 ---
+`r params$update_date`
 
 
 <style type="text/css">
