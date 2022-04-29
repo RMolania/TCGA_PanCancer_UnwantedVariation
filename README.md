@@ -12,7 +12,7 @@ We have created a Summarized experiment objects contacting expression data (raw 
 [All the TCGA RNA-seq data](https://zenodo.org/record/6326542#.Ymu9wS8Rquo)
 
 Vigettes:
-[The TCGA READ RNA-seq data]()
+[The TCGA READ RNA-seq data](https://htmlpreview.github.io/?https://github.com/RMolania/TCGA_PanCancer_UnwantedVariation/blob/master/Vigettes/TCGA_READ_RNAseq_Vignette.html)
 
 
 Please email molania.r@wehi.edu.au if you have any questions.
