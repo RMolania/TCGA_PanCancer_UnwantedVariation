@@ -11,7 +11,7 @@ output:
     gallery: yes
     highlight: tango
     lightbox: yes
-    self_contained: no
+    self_contained: yes
     thumbnails: no
     number_sections: yes
     toc_depth: 3
