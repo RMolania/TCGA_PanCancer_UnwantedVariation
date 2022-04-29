@@ -11,7 +11,7 @@ output:
     gallery: yes
     highlight: tango
     lightbox: yes
-    self_contained: no
+    self_contained: yes
     thumbnails: no
     number_sections: yes
     toc_depth: 3
@@ -109,11 +109,6 @@ The lists of housekeeping genes might be suitable to use as negative control gen
 
 ```{r readingTheData, warning=FALSE, message=FALSE, results=FALSE}
 source('Libraries_HelperFunctions_ForBRCAVignette.R')
-source('Scripts/Libraries_HelperFunctions_ForBRCAVignette.R')
-brca.se <- readRDS(
-  'TCGA_SummarizedExperiment_HTseq_BRCA.rds'
-  ) # 56493  1222
-all.samples <- colnames(brca.se)
 brca.se <- readRDS(
   '../TCGA_SummarizedExperiment_HTseq_BRCA.rds'
   ) # 56493  1222
@@ -436,7 +431,7 @@ The TCGA BRCA microarray gene expression data were manually downloaded from the 
 
 ```{r}
 brca.microarray <- read.delim(
-  'BRCA.transcriptome__agilentg4502a_07_3__unc_edu__Level_3__unc_lowess_normalization_gene_level__data.data.txt',
+  '../BRCA.transcriptome__agilentg4502a_07_3__unc_edu__Level_3__unc_lowess_normalization_gene_level__data.data.txt',
   row.names = 1,
   stringsAsFactors = FALSE
   )
