@@ -12,7 +12,7 @@ We have created a Summarized experiment objects contacting expression data (raw 
 
 Please email molania.r@wehi.edu.au if you have any questions.
 
-[RUV-III-PRPS](https://htmlpreview.github.io/?https://github.com/RMolania/Test/blob/main/TCGA_READ_RNAseq_tcgaCleaneR_Vignette2.html)
+[RUV-III-PRPS](https://htmlpreview.github.io/?https://github.com/RMolania/TCGA_PanCancer_UnwantedVariation/blob/master/Vigettes/TCGA_READ_RNAseq_tcgaCleaneR_Vignette2.html)
 
 *Unwanted variation in TCGA RNA-seq datasets.*
 
