@@ -1,0 +1,10 @@
+pandoc: 2.14.0.3
+pkgdown: 2.0.2
+pkgdown_sha: ~
+articles:
+  tcgaCleaneR_vignette: tcgaCleaneR_vignette.html
+last_built: 2022-05-02T18:59Z
+urls:
+  reference: https://github.com/AbhishekSinha28/tcgaCleaneR/reference
+  article: https://github.com/AbhishekSinha28/tcgaCleaneR/articles
+
