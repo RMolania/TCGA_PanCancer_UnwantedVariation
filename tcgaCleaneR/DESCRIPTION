@@ -1,0 +1,41 @@
+Package: tcgaCleaneR
+Type: Package
+Title: TGCA Data Analysis 
+Version: 0.1.0
+Author: Abhishek Sinha
+Maintainer: Abhishek Sinha <asin0080@student.monash.edu>
+Description: A system wrapped around SummarizedExperiment to analyse unwanted variations e.g. Batch Effect in TGCA datasets. Set of Data wrangling functions allows user to filter by specific genes, count of genes in samples, sample purity. User can run PCA, Correlation analysis, Anova test to study the variation in data in terms of PCs with respect to different variations.  
+URL: https://github.com/AbhishekSinha28/tcgaCleaneR
+License: GPL-3
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.1.2
+LazyData: true
+Imports:
+    SummarizedExperiment,
+    BiocSingular,
+    ggplot2,
+    cowplot,
+    tidyverse,
+    dplyr,
+    tidyr,
+    MASS,
+    fastDummies,
+    ggpubr,
+    gridExtra,
+    scales,
+    wesanderson,
+    parallel,
+    ComplexHeatmap,
+    RColorBrewer,
+    viridis,
+    ruv,
+    DelayedArray,
+    Matrix,
+    BiocParallel
+Depends: 
+    R (>= 4.1.0)
+Suggests:
+    knitr,
+    testthat
+VignetteBuilder: knitr
