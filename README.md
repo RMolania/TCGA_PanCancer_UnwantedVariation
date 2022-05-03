@@ -20,10 +20,6 @@ Vignette: RUV-III-PRPS normalisation for the TCGA BRCA RNA-seq data
 [The TCGA BRCA RNA-seq data](https://htmlpreview.github.io/?https://github.com/RMolania/TCGA_PanCancer_UnwantedVariation/blob/master/Vigettes/TCGA_BRCA_RNAseq_Vignette.html)
 
 
-Vignettes: How to use the tcgaCleaneR package
-
-
-[The tcgaCleaneR package]()
 
 Please email molania.r@wehi.edu.au if you have any questions.
 
