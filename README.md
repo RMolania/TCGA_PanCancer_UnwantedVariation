@@ -1,4 +1,4 @@
-This repository contains R scripts, RMarkdown reports, R package and R shiny app associated with the manuscript: [Molania R et al., Removing unwanted variation from large-scale RNA sequencing data with PRPS, Nature Biotechnology, 2022.]()
+This repository contains R scripts, RMarkdown reports, R package and R shiny app associated with the manuscript: [Molania R et al., Removing unwanted variation from large-scale RNA sequencing data with PRPS, Nature Biotechnology, 2022.](https://www.nature.com/articles/s41587-022-01440-w)
 
 Available folders contain the below files:
 
