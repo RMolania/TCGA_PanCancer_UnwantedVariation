@@ -1,4 +1,5 @@
 This repository contains R scripts, RMarkdown reports, R package and R shiny app associated with the manuscript: [Molania R et al., Removing unwanted variation from large-scale RNA sequencing data with PRPS, Nature Biotechnology, 2022.](https://www.nature.com/articles/s41587-022-01440-w)
+Please note, we are in fiala stage of developing an R package for fast and easy implementation of the RUV-III-PRPS method [here](https://github.com/RMolania/RUVIIIPRPS/tree/Ramyar-M)
 
 Available folders contain the below files:
 
